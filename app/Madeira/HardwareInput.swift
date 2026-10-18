@@ -112,7 +112,7 @@ struct PasteText {
 
     static func interval(milliseconds: String?) -> Double {
         guard let raw = milliseconds, let value = Double(raw), value.isFinite else { return 0.01 }
-        return min(100, max(5, value)) / 1000
+        return min(100, max(1, value)) / 1000
     }
 
     init(_ text: String) {
