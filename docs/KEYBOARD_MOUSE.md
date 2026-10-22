@@ -258,6 +258,7 @@ and restart to enable the fixes again. The same switch is listed in Settings > A
 | --- | --- | --- |
 | `MADEIRA_MOUSE_ROUTING` | on | `0`: restore the previous mouse routing and pointer-lock behaviour; restart Madeira. |
 | `MADEIRA_HWINPUT` | on | `0`: no keyboard/mouse bridging, pointer recognisers, touch filter, drawn cursor, lock or right-stick mouse; the app behaves as before this change (the Info.plist key stays). |
+| `MADEIRA_XCTEST_TYPING` | off | `1`: while the library keyboard is first responder, UIKit owns typing and raw GCKeyboard is suppressed. Done restores raw gameplay input. For verified XCTest automation only. |
 | `MADEIRA_INPUT_FOCUS` | on | `0`: keyboard and mouse reach the program whatever has focus in the app (still not while the app is inactive). |
 | `MADEIRA_DIRECT_CURSOR` | on | `0`: no cursor is drawn on the game view, motion stays relative there and the pointer never locks by itself; the driver reports nothing. |
 | `MADEIRA_POINTER_ABSOLUTE` | on | `0`: the program's cursor never follows the pointer's position; all motion is relative. |
@@ -351,3 +352,15 @@ The Unicode contract is described in Microsoft's
 [KEYBDINPUT reference](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-keybdinput).
 Apple documents explicit keyboard paste intent in its
 [UIPasteboard reference](https://developer.apple.com/documentation/uikit/uipasteboard).
+
+### XCTest typing with a connected hardware keyboard
+
+Ordinary DeviceKit `device.io.keys` uses UIKit typing, which does not establish
+GCKeyboard delivery. To automate a game with that route, opt in through the
+existing per-game config: `env.MADEIRA_XCTEST_TYPING = 1` (build22 or later).
+Open the library keyboard, focus the intended guest field, send synthetic keys,
+and verify a harmless mixed-case fixture, Backspace and Tab before credentials.
+Close the keyboard with Done before gameplay. The mode selects one typing owner
+only while that responder is active; default hardware input is unchanged.
+It is an automation transport choice, not a fix for unexplained DirectInput loss.
+Do not use its success as evidence that physical keyboard input is repaired.

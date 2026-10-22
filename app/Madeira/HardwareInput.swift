@@ -741,7 +741,13 @@ final class HardwareInput: ObservableObject {
     /// True while a hardware keyboard delivers raw key events. The text bridge
     /// (MetalBackedView's UIKeyInput) receives the same presses from UIKit, so
     /// it stands aside while this is true instead of typing every key twice.
-    var handlesTyping: Bool { Self.enabled && keyboardConnected }
+    /// An explicit test session can route UIKit's synthetic typing while the
+    /// library keyboard owns first responder. Raw gameplay resumes on Done.
+    private var libraryTypingOwnsKeys: Bool {
+        getenv("MADEIRA_XCTEST_TYPING").map { String(cString: $0) } == "1"
+            && LibraryKeyboard.input?.isFirstResponder == true
+    }
+    var handlesTyping: Bool { Self.enabled && keyboardConnected && !libraryTypingOwnsKeys }
 
     // MARK: focus (main thread)
 
@@ -1008,7 +1014,7 @@ final class HardwareInput: ObservableObject {
     private func evaluateFocus(_ why: String) {
         installTouchObserver()
         let base = computeBaseFocus()
-        let keyboard = base && !typingElsewhere()
+        let keyboard = base && !typingElsewhere() && !libraryTypingOwnsKeys
         let over = hoverSeen ? pointerOver : clickFocus.onGame
         let mouse = base && (!Self.focusEnabled || pointerLocked || over || !gameButtons.isEmpty)
         baseFocused = base
