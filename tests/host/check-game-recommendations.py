@@ -203,12 +203,17 @@ assert 'env.MADEIRA_CHILD_ARGS = PlayGTAV.exe -nobattleye' in gta['lines']
 assert 'env.MADEIRA_DOCK_KEEP_ALIVE = Launcher.exe;GTA5_Enhanced.exe' in gta['lines']
 assert 'semaphoreFastPath: true, fpsMode: 4' in gta['switches'] and 'nvidia: true' in gta['switches']
 assert 'env.MADEIRA_FASTSYNC_SEM = 1' in presets['gta5e-other']['lines']
+# Version 3 of the list outside Steam (ml2280): it starts in the Wine desktop, an aarch64 session, so the
+# launcher installer's services.exe can run (in the game's own ARM64EC session that aarch64 program is refused).
+assert 'launchMode: "desktop"' in presets['gta5e-other']['switches'], presets['gta5e-other']['switches']
+assert 'launchMode' not in presets['gta5e-steam']['switches']
+assert 'if let mode = rec.launchMode { entry.launchMode = mode == "desktop" ? mode : nil }' in apply_src
 # Version 2 of both GTA lists (2026-10-12): the orphan-lock reaper's stamped mode, as RDR2 and
 # Horizon Zero Dawn have. The default mode released a busy SocialClubHelper.exe lock at Story Mode.
 for ident in ('gta5e-steam', 'gta5e-other', 'rdr2-steam', 'rdr2-other', 'horizon-zero-dawn'):
     assert 'env.MADEIRA_LOCK_ORPHAN = stamped' in presets[ident]['lines'], ident
 # Version 3 of the Steam list (build 514): the VC++ setup's elevated engine is not started, as for RDR2.
-assert presets['gta5e-steam']['version'] == 3 and presets['gta5e-other']['version'] == 2, \
+assert presets['gta5e-steam']['version'] == 3 and presets['gta5e-other']['version'] == 3, \
     (presets['gta5e-steam']['version'], presets['gta5e-other']['version'])
 for ident in ('rdr2-steam', 'rdr2-other', 'gta5e-steam'):
     assert 'env.MADEIRA_SPAWN_BLOCK = RockstarErrorHandler;.be\\vc_redist' in presets[ident]['lines'], ident
@@ -389,6 +394,7 @@ struct LibraryEntry {
     var config: String? = nil
     var resolution = "1408x648"
     var display: String? = nil
+    var launchMode: String? = nil
     var fpsMode = 1
     var fastSync: Bool? = nil
     var semaphoreFastPath: Bool? = nil

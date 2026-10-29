@@ -66,6 +66,8 @@ struct GameRecommendation: Equatable {
     static let screen720 = "screen@720"
     /// Aspect & scaling (DisplayMode raw value); "fit" is the default.
     var display: String? = nil
+    /// Game details › Launch › Start (LibraryEntry.launchMode): "desktop", the Wine desktop.
+    var launchMode: String? = nil
 
     /// The config file's text as GameProfile stores it (one trailing newline).
     var fileText: String { config.hasSuffix("\n") ? config : config + "\n" }
@@ -84,6 +86,7 @@ struct GameRecommendation: Equatable {
             parts.append("FPS limit \(label)")
         }
         if let resolution { parts.append(resolution == Self.screen720 ? "this screen's shape at 720 lines" : resolution) }
+        if launchMode == "desktop" { parts.append("starts in the Wine desktop") }
         return parts.joined(separator: ", ")
     }
 }
@@ -311,9 +314,14 @@ enum GameRecommendations {
     /// GTA V Enhanced started from its own PlayGTAV.exe outside a Steam
     /// library (Rockstar Games Launcher or another store; build 451). Version 2:
     /// the same orphan-lock reaper mode as the Steam copy (its launcher and
-    /// Social Club too).
+    /// Social Club too). Version 3 (ml2280, testers' log of 2026-10-28): it starts in
+    /// the Wine desktop. An Epic copy's first start runs the Rockstar Games Launcher
+    /// installer, whose service needs services.exe; started directly, the session is the
+    /// game's (ARM64EC), where that aarch64 program cannot run. In the desktop sechost
+    /// starts it on demand (no services batch: it would write the Epic sign-in arguments
+    /// to disk).
     static let gta5EnhancedOther = GameRecommendation(
-        id: "gta5e-other", title: "GTA V Enhanced (outside Steam)", version: 2,
+        id: "gta5e-other", title: "GTA V Enhanced (outside Steam)", version: 3,
         config: """
         # Madeira's recommended settings for GTA V Enhanced outside Steam (Rockstar Games Launcher or another store).
         # Reset to Recommended, at the bottom of the game's settings, brings them back.
@@ -340,7 +348,7 @@ enum GameRecommendations {
         env.MADEIRA_WAIT_CHILDREN = 1
         env.MADEIRA_JIT_DUMP = 0
         """,
-        avx: false, nvidia: true, wineVCRT: false, fastSync: true, resolution: "1280x720", display: "fit")
+        avx: false, nvidia: true, wineVCRT: false, fastSync: true, resolution: "1280x720", display: "fit", launchMode: "desktop")
 
     /// Ghost of Tsushima (build 336: DualSense input, rumble, triggers and light work).
     /// Build 492 adds Horizon Zero Dawn's proven fix for typed buffer views that
