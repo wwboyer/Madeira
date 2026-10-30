@@ -109,7 +109,7 @@ enum SquareEnixSignInError: Error, Equatable, LocalizedError {
         case .unexpectedReply:
             return "Square Enix sent a reply Madeira doesn't understand. Try again later."
         case .closed:
-            return "FINAL FANTASY XIV is under maintenance. Try again when it ends."
+            return "FINAL FANTASY XIV is under maintenance. Check the FFXIV Lodestone for more details."
         case .gameUpdateNeeded(let target):
             return "The game needs an update" + (target.map { " (to \($0))" } ?? "") + " before you can play."
         case .refused(let message):
