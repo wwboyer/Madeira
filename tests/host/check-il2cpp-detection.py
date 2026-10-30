@@ -30,6 +30,9 @@ struct LibraryEntry {
     var epicAppName: String? = nil
     var epicAntiCheatOff: Bool? = nil
     static let epicAntiCheatOffProgram: [String: String] = [:]
+    // FINAL FANTASY XIV's start-up program (LibraryEntry.transientProgram): none here.
+    var id = UUID()
+    static func transientProgram(for id: UUID) -> String? { nil }
     static let hostDrive = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
 '''
 for header in ['    var windowsPath:', '    var startsSteamGameDirectly:',
