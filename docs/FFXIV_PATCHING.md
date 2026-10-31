@@ -14,11 +14,12 @@ steps 2 and 6 return the patch lists. Mark anything unconfirmed as
 | Boot patch list (sign-in step 2) | confirmed |
 | Boot patch download | confirmed |
 | Game patch list (sign-in step 6, outdated game) | **next**: `tools/sqex-signin-probe.py --game-version 2012.01.01.0000.0000 … --save-reply …` |
-| Game patch download | confirmed: public, same host; SHA-1 per 50,000,000-byte block |
+| Game patch download | confirmed: public, same host; checked with SHA-1 (per 50,000,000-byte block, inferred) |
 | ZiPatch container, FHDR, APLY | confirmed |
 | SQPK F (file) operations | confirmed: a boot patch rebuilt the installed boot files exactly |
-| SQPK A, D, E, H (dat and index files) | from xiv.dev only; unconfirmed (a real ex1 patch with A and H is in hand) |
-| Fresh install | starting state confirmed (official Mac app); the patch list for it is unknown |
+| SQPK A and H (dat and index files) | confirmed: reapplying ex1's newest patch to its patched dats changed nothing |
+| SQPK D and E | from xiv.dev only; not seen in a patch yet |
+| Fresh install | starting state and boot patch confirmed (official Mac app); the game patch list for it is unknown |
 
 ## Patch lists
 
@@ -74,6 +75,11 @@ the rest. The template's
   opening movies (`movie/ffxiv/00000.bk2` to `00003.bk2`, 1.38 GB). There is
   no `sqpack/` and no `ffxiv_dx11.exe`.
 
+The boot check for `2018.12.14.0000.0001` lists one patch,
+`D2026.08.18.0000.0001`, the boot patch whose F operations rebuild the
+current boot folder exactly (see the confirmation log). So the boot side of a
+fresh install is known.
+
 So a fresh install is a game folder that reports `2012.01.01.0000.0000`.
 Everything else, the executable included, comes from patches. Whether
 expansions are requested in the same session registration or a later one is
@@ -92,7 +98,7 @@ little-endian:
 |---|---|---|---|
 | 0x00 | 8 | 1 | format version (assumed) |
 | 0x08 | 8 | 5200 | record size |
-| 0x10 | 8 | 50,000,000 | hash block size |
+| 0x10 | 8 | 50,000,000 | hash block size (inferred) |
 | 0x18 | 8 | 1 | number of blocks |
 | 0x20 | 8 | the patch's size | patch size |
 | 0x28 | 8 | 0 | unknown |
@@ -102,7 +108,9 @@ little-endian:
 
 The SHA-1s of the base game's and ex1's newest patches, downloaded again on
 2026-10-30, match their records. Both are under 50,000,000 bytes, so each
-hash covers the whole file. The launcher must take these hashes from the
+hash covers the whole file. That the 50,000,000 field is a block size, with
+one hash per block for larger patches, is inferred from the layout; no
+multi-block record has been seen. The launcher must take these hashes from the
 patch list; how a list gives them is **unknown** until step 6's reply is
 recorded.
 
@@ -173,10 +181,38 @@ compressed size of `32000` means the data is stored raw; otherwise it is raw
 deflate. Each block, header included, is padded to a multiple of 128 bytes:
 `(data length + 0x8F) & ~0x7F`.
 
+### Dat and index commands (A, D, E, H)
+
+These name their target with three bytes, then a file reference of 8 bytes:
+main ID (2), sub ID (2), file number (4). The expansion is the sub ID's high
+byte, so the file is `sqpack/{ffxiv | exN}/{main:02x}{sub:04x}.win32.dat{file}`,
+or `.win32.index` (number 0) / `.win32.index{file}` for an index. Offsets and
+counts are in 128-byte blocks.
+
+- **`A`** (add): after the target, block offset, block count and delete
+  count (4 bytes each). Its data (block count × 128 bytes) is written at the
+  offset, followed by delete count × 128 zero bytes.
+- **`H`** (header): the three bytes are the file kind (`D` dat or `I`
+  index), the header kind (`V` version, `D` data, `I` index) and a pad byte.
+  1,024 bytes follow the target. A `V` header is written at offset 0, the
+  others at 1,024. The `V` payload starts with `SqPack`.
+- **`D`** (delete) and **`E`** (expand), from xiv.dev and not seen yet:
+  block offset and block count. Both write count × 128 zero bytes at the
+  offset, the first 20 of them an empty-block header (little-endian: 128, 0,
+  0, the count, 0). `D` fails past the end of the file; `E` may extend it.
+
+The ex1 patch `D2026.08.20.0000.0000` has two `A` commands (one into each of
+`030100.win32.dat0` and `dat1`) and four `H` (version and data header of
+each). Reapplying it to clones of the already-patched files wrote the same
+bytes that were there, which a wrong offset, path or field would not.
+
 ## Tools
 
 - **`tools/zipatch-inspect.py survey <patch>`** checks every chunk's CRC32
   and lists the chunks, SQPK commands and file operations.
+- **`tools/zipatch-inspect.py apply-sqpk <patch> <game>`** applies the `A`,
+  `D`, `E` and `H` commands to `<game>/sqpack` (use copies or APFS clones,
+  `cp -c`) and reports whether each one changed data.
 - **`tools/zipatch-inspect.py apply-files <patch> <out> [<reference>]`**
   applies only the F operations, then compares each written file with the
   reference folder.
@@ -193,10 +229,9 @@ deflate. Each block, header included, is padded to a multiple of 128 bytes:
 - What step 6 returns for a fresh install (`2012.01.01.0000.0000`): whether
   expansions come in the same list, and what the expansion version files
   should say before they exist.
-- Whether the SQPK `A`, `D`, `E` and `H` commands behave as xiv.dev
-  describes. One test without old data: applying the newest ex1 patch
-  (`A` and `H`) to copies of the already-patched ex1 files should change
-  nothing.
+- Whether `D` and `E` behave as xiv.dev describes. No patch seen so far
+  uses them; the fresh-install chain may.
+- `H` commands for index files (none seen yet).
 - The remaining `FHDR` fields, and the `T` command.
 
 ## Provenance
@@ -233,3 +268,5 @@ code is copied.
 | Game downloads | `HEAD` of the newest base game, ex1 and ex5 patches; `GET` of base game and ex1 | public with no User-Agent, resumable, sizes match the launcher's records; SHA-1s match the records |
 | Game patch chunks | `zipatch-inspect.py survey` of base game `D2026.10.16.0000.0000` and ex1 `D2026.08.20.0000.0000` | all CRC32s valid; FHDR 244 bytes, version 3, `DIFF`; base game: 35 F `A` (`ffxiv_dx11.exe`, `XInputXIV3.dll`, `XInputXIV9.dll`); ex1: SQPK `A` ×2, `H` ×4 |
 | Fresh install | the official Mac app's bottle template | `game/` holds only `ffxivgame.ver` (`2012.01.01.0000.0000`) and the opening movies; boot `2018.12.14.0000.0001` |
+| Boot for a fresh install | boot check for `2018.12.14.0000.0001` (no sign-in needed) | one patch, `D2026.08.18.0000.0001` (20,820,391 bytes) |
+| SQPK A and H | `zipatch-inspect.py apply-sqpk` of ex1 `D2026.08.20.0000.0000` on APFS clones of ex1 at that version | 2 `A` and 4 `H` wrote identical bytes; both dats still byte-identical to the install |

@@ -7,6 +7,10 @@
   apply-files <file.patch> <out-dir> [<reference-dir>]
       Apply only the SQPK F (file) operations into <out-dir>, then compare
       every written file with <reference-dir>, byte for byte.
+  apply-sqpk <file.patch> <game-dir>
+      Apply the SQPK A, D, E and H (dat and index) commands to the files
+      in <game-dir>/sqpack, in place, and report which commands changed
+      data. Run it on copies (APFS clones: cp -c), never the real game.
 
 A research tool for checking the format against real files, not Madeira's
 patcher. Big-endian unless noted.
@@ -134,10 +138,66 @@ def apply_files(path, out, reference=None):
     print(f'{same} of {len(written)} written files identical to the reference')
 
 
+BLOCK = 128   # dat offsets and counts are in 128-byte blocks
+
+
+def sqpack_path(body, offset, kind):
+    """The sqpack-relative path of the dat ('D') or index ('I') file named at body[offset:offset + 8]."""
+    main, sub, number = struct.unpack_from('>HHI', body, offset)
+    folder = 'ffxiv' if sub >> 8 == 0 else f'ex{sub >> 8}'
+    suffix = f'dat{number}' if kind == 'D' else 'index' + (str(number) if number else '')
+    return f'{folder}/{main:02x}{sub:04x}.win32.{suffix}'
+
+
+def dat_commands(data):
+    """(command, path, offset, bytes to write) for each SQPK A, D, E and H command, in order."""
+    for name, payload, _ in chunks(data):
+        if name != 'SQPK':
+            continue
+        command, body = chr(payload[4]), payload[5:]
+        if command == 'A':
+            offset, count, delete = struct.unpack_from('>III', body, 0x0B)
+            fill = body[0x17:0x17 + count * BLOCK]
+            yield 'A', sqpack_path(body, 3, 'D'), offset * BLOCK, fill + bytes(delete * BLOCK)
+        elif command in 'DE':
+            offset, count = struct.unpack_from('>II', body, 0x0B)
+            empty = struct.pack('<IIIII', BLOCK, 0, 0, count, 0).ljust(count * BLOCK, b'\0')
+            yield command, sqpack_path(body, 3, 'D'), offset * BLOCK, empty
+        elif command == 'H':
+            file_kind, header_kind = chr(body[0]), chr(body[1])
+            yield 'H', sqpack_path(body, 3, file_kind), 0 if header_kind == 'V' else 1024, body[11:11 + 1024]
+
+
+def apply_sqpk(path, game):
+    """Apply the dat and index commands to <game>/sqpack and report what changed."""
+    data = open(path, 'rb').read()
+    changed, counts = collections.Counter(), collections.Counter()
+    for command, fpath, offset, fill in dat_commands(data):
+        target = os.path.join(game, 'sqpack', *fpath.split('/'))
+        size = os.path.getsize(target)
+        if command == 'D' and offset + len(fill) > size:
+            raise SystemExit(f'D past the end of {fpath} ({offset} + {len(fill)} > {size})')
+        with open(target, 'r+b') as f:
+            f.seek(offset)
+            before = f.read(len(fill))
+            f.seek(offset)
+            f.write(fill)
+        counts[command] += 1
+        if before != fill:
+            changed[fpath] += 1
+            print(f'  {command} {fpath} at {offset}: {len(fill)} bytes, CHANGED'
+                  f' ({sum(a != b for a, b in zip(before, fill)) + abs(len(fill) - len(before))} bytes differ)')
+        else:
+            print(f'  {command} {fpath} at {offset}: {len(fill)} bytes, unchanged')
+    print(f'applied {dict(counts)}; commands that changed data: {sum(changed.values())}')
+
+
 if __name__ == '__main__':
     if len(sys.argv) >= 3 and sys.argv[1] == 'survey':
         survey(sys.argv[2])
     elif len(sys.argv) >= 4 and sys.argv[1] == 'apply-files':
         apply_files(*sys.argv[2:5])
+    elif len(sys.argv) == 4 and sys.argv[1] == 'apply-sqpk':
+        apply_sqpk(*sys.argv[2:4])
     else:
         raise SystemExit(__doc__)
