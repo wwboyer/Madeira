@@ -222,7 +222,8 @@ def apply_patch(path, game):
                     expansion, = struct.unpack_from('>H', body, 0x17)
                     folder = 'ffxiv' if expansion == 0 else f'ex{expansion}'
                     present = [os.path.join(top, name) for part in ('sqpack', 'movie')
-                               for top, _, names in os.walk(os.path.join(game, part, folder)) for name in names]
+                               for top, _, names in os.walk(os.path.join(game, part, folder)) for name in names
+                               if not name.endswith(('.ver', '.bck'))]   # a fresh install writes these first
                     if present:
                         raise SystemExit(f'F R (reset?) for {folder}, which has {len(present)} files; unconfirmed, not applied')
                     command += 'R'

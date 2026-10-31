@@ -21,6 +21,8 @@ enum FFXIVPatchError: LocalizedError, Equatable {
     case download(String)
     case hashMismatch(String)
     case notEnoughSpace(needed: Int64, available: Int64)
+    /// A history patch's reset (F R) met a repository that already has files.
+    case resetOfNonEmpty(String)
 
     var errorDescription: String? {
         switch self {
@@ -33,6 +35,8 @@ enum FFXIVPatchError: LocalizedError, Equatable {
         case .notEnoughSpace(let needed, let available):
             let format = { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
             return "Not enough free space: the next patch needs \(format(needed)), and \(format(available)) is free."
+        case .resetOfNonEmpty(let folder):
+            return "A patch would start \(folder) over, but it already has files. Delete the game's \(folder) folders and try again."
         }
     }
 }
@@ -157,13 +161,16 @@ struct ZiPatchApplier {
         case "R":
             // Opens each history patch with an empty path. What it removes is unconfirmed,
             // so it is only accepted where it can't matter: a repository with no files yet.
+            // Its .ver/.bck files don't count: a fresh install writes them first, and the
+            // patch list's sizes and file counts leave them out too.
             let folder = expansion == 0 ? "ffxiv" : "ex\(expansion)"
             for part in ["sqpack", "movie"] {
                 let walker = FileManager.default.enumerator(at: root.appendingPathComponent(part).appendingPathComponent(folder),
                                                             includingPropertiesForKeys: [.isRegularFileKey])
                 while let url = walker?.nextObject() as? URL {
-                    if (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
-                        throw FFXIVPatchError.unsupported("a reset of \(folder), which already has files")
+                    if !["ver", "bck"].contains(url.pathExtension),
+                       (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+                        throw FFXIVPatchError.resetOfNonEmpty(folder)
                     }
                 }
             }
@@ -438,6 +445,9 @@ struct FFXIVPatchRunner {
 
     private var journalFile: URL { work.appendingPathComponent("applied.txt") }
     private func key(_ patch: SquareEnixPatch) -> String { "\(patch.repository)/\(patch.url.lastPathComponent)" }
+
+    /// The patches applied so far (`repository/name`), from the journal.
+    func applied() -> [String] { journal() }
 
     private func journal() -> [String] {
         ((try? String(contentsOf: journalFile, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)

@@ -192,6 +192,13 @@ under the wrong setting hasn't been observed.
     doesn't say which field was wrong)
 
   Canceling or failing leaves the app run's one Wine session unused.
+- **When the game needs patches,** the sheet doesn't show "the game needs an
+  update": it hands the patch list to Game details, which shows an **Update**
+  section (sizes, the space needed, an Update button) and runs it
+  (`FFXIVLibrary.swift`, `docs/FFXIV_PATCHING.md`). A remembered password is
+  saved then only for a game update, the one case where Square Enix had
+  accepted it. An install still at `2012.01.01.0000.0000` labels the button
+  **Sign In**, since it can only list patches.
 - **The session is for one launch only.** On success the sheet sets that
   launch's transient program and arguments, which `applyEnvironment` clears.
   `build/madeira_redact.h` hides `DEV.TestSID` in logged command lines.

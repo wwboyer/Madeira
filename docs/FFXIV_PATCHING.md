@@ -285,8 +285,10 @@ bytes that were there, which a wrong offset, path or field would not.
 
 Nothing here is built yet.
 
-- **Library section:** "FINAL FANTASY XIV", shown like the Epic Games
-  section and switched by `MADEIRA_FFXIV` (default on). Not installed: an
+- **Library section:** "FINAL FANTASY XIV" (`app/Madeira/FFXIVLibrary.swift`,
+  built 2026-10-31), shown like the Epic Games section and switched by
+  `MADEIRA_FFXIV` (default on). With FFXIV entries elsewhere than the official
+  folder, a link under them installs a new copy. Not installed: an
   install card whose sheet shows the download and installed sizes, the
   expansion choice and progress. Installed: the game's card, opening Game
   details, which offers **Update** when sign-in reports pending patches.
@@ -323,9 +325,12 @@ Nothing here is built yet.
   SHA-1 checks, applying, deleting, the `.ver`/`.bck` files, and a journal
   of applied patches (`.madeira-patches/applied.txt` in the install folder)
   so an interrupted run continues (tested by killing a run mid-download).
-  A run interrupted while applying a history patch's first part can't
-  resume, because that part's `R` needs an empty repository; the folder has
-  to be cleared first. `ZiPatchApplier.maxChunk` (256 MiB) is a sanity
+  A run interrupted while applying a history patch's first part meets its
+  own partial files at `R`. `FFXIVLibrary` then starts that repository over,
+  once, but only when the journal holds none of its patches and its version
+  file is missing or still `2012.01.01.0000.0000`: then every file there is
+  the interrupted part's. In any other case the reset is refused. `R` ignores
+  `.ver` and `.bck` files, which a fresh install writes before any patch. `ZiPatchApplier.maxChunk` (256 MiB) is a sanity
   limit, not a measured one: only ex1's chunks and one base-game patch have
   been through it, and the base game's 34 history parts are untested.
 - **Downloads:** the background-download helper Steam and Epic share, paused

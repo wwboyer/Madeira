@@ -113,11 +113,14 @@ struct SquareEnixEntrySection: View {
 }
 
 /// Play's sign-in for a FINAL FANTASY XIV entry. `signedIn` gets what to start;
-/// the sheet then closes itself.
+/// the sheet then closes itself. With `updateNeeded`, a sign-in that finds patches
+/// pending hands their list over and closes too (FFXIVLibrary.swift), instead of
+/// showing "the game needs an update".
 struct SquareEnixSignInSheet: View {
     let entry: LibraryEntry
     let install: FFXIVInstall
     let license: SquareEnixLicense
+    var updateNeeded: ((SquareEnixUpdate) -> Void)? = nil
     var signedIn: (SquareEnixLaunch) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -127,6 +130,8 @@ struct SquareEnixSignInSheet: View {
     @State private var step: SquareEnixStep?
     @State private var error: String?
     @State private var task: Task<Void, Never>?
+    /// The install is still at the fresh-install version, so signing in can only list patches.
+    @State private var fresh = false
     @FocusState private var focus: Field?
 
     private enum Field { case id, password, oneTime }
@@ -180,7 +185,7 @@ struct SquareEnixSignInSheet: View {
                 Section {
                     Button(action: signIn) {
                         HStack {
-                            Text("Sign In and Play")
+                            Text(fresh ? "Sign In" : "Sign In and Play")
                             if busy { Spacer(); ProgressView() }
                         }
                     }
@@ -196,6 +201,7 @@ struct SquareEnixSignInSheet: View {
             }
             .interactiveDismissDisabled(busy)
             .onAppear {
+                fresh = (try? install.versions().game) == FFXIVLibrary.baseVersion
                 if entry.squareEnixRemember == true, let saved = SquareEnixCredentialStore.load(for: entry.id) {
                     id = saved.id
                     password = saved.password
@@ -232,6 +238,16 @@ struct SquareEnixSignInSheet: View {
                 dismiss()
             } catch SquareEnixSignInError.cancelled {
                 // Cancel closed the sheet.
+            } catch SquareEnixSignInError.updateNeeded(let update) where updateNeeded != nil && !update.patches.isEmpty {
+                // Session registration only answers after the password was accepted; the
+                // boot check comes before it, so a boot update proves nothing about it.
+                if remember && update.stage == .game {
+                    SquareEnixCredentialStore.save(.init(id: credentials.id, password: credentials.password), for: entryID)
+                }
+                password = ""
+                oneTimePassword = ""
+                updateNeeded?(update)
+                dismiss()
             } catch let failure as SquareEnixSignInError {
                 // A one-time password is good once; a refused password is not tried
                 // again by itself, nor kept: repeated wrong passwords can lock the account.

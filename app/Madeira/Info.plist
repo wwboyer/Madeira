@@ -86,6 +86,13 @@
 				<key>NSIncludesSubdomains</key>
 				<false/>
 			</dict>
+			<key>patch-dl.ffxiv.com</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<false/>
+			</dict>
 		</dict>
 	</dict>
 	<key>NSBonjourServices</key>
