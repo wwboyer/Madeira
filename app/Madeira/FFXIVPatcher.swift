@@ -402,11 +402,18 @@ struct FFXIVPatchRunner {
     /// Room for the rest of the download plus the repository's growth.
     private func checkSpace(for patch: SquareEnixPatch, have: Int64, current: Int64) throws {
         let needed = (patch.size - have) + max(0, patch.installedSize - current) + reserve
-        // A fresh URL each time: resource values are cached on a URL, so the stored
-        // `install` would keep reporting the space from the start of the run.
-        let values = try URL(fileURLWithPath: install.path).resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-        let available = values.volumeAvailableCapacityForImportantUsage ?? 0
+        let available = Self.availableCapacity(at: install)   // read afresh for every patch
         if available < needed { throw FFXIVPatchError.notEnoughSpace(needed: needed, available: available) }
+    }
+
+    /// Free space on the volume holding `url`, read through a fresh URL (resource
+    /// values are cached on a URL). An external drive may not report the "important
+    /// usage" figure, so the plain available capacity stands in for it.
+    static func availableCapacity(at url: URL) -> Int64 {
+        let values = try? URL(fileURLWithPath: url.path).resourceValues(
+            forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey])
+        if let important = values?.volumeAvailableCapacityForImportantUsage, important > 0 { return important }
+        return Int64(values?.volumeAvailableCapacity ?? 0)
     }
 
     /// What the patch list's installed-size field counts: the repository's files,

@@ -17,12 +17,31 @@ import SwiftUI
     /// The library's FINAL FANTASY XIV section, its install card and Game details' Update. Off with `env.MADEIRA_FFXIV = 0`.
     static var enabled: Bool { SteamSignIn.flag("MADEIRA_FFXIV", default: true) }
 
-    /// The official install folder, inside drive_c.
+    /// The official install folder, inside drive_c: where an install on this device goes.
     nonisolated static let folder = "Program Files (x86)/SquareEnix/FINAL FANTASY XIV - A Realm Reborn"
     /// The version a fresh install reports for boot, game and each expansion.
     nonisolated static let baseVersion = "2012.01.01.0000.0000"
     nonisolated static let title = "FINAL FANTASY XIV Online"
-    static var officialRoot: URL { LibraryModel.drive.appendingPathComponent(folder, isDirectory: true) }
+
+    /// Where an install goes, relative to drive_c: the official folder on this device
+    /// (`drive` nil), else the same SquareEnix folder on an external drive
+    /// (ExternalDrives.swift, which links it in as drive_c/External/<name>).
+    nonisolated static func relativeRoot(drive: String?) -> String {
+        drive.map { "External/\($0)/SquareEnix/FINAL FANTASY XIV - A Realm Reborn" } ?? folder
+    }
+
+    /// The folder to read and write an install through: on an external drive its
+    /// real location, after ExternalDrives checks the drive is connected, still
+    /// the one registered, and writable.
+    nonisolated static func nativeRoot(_ relative: String) throws -> URL {
+        do {
+            return try ExternalDrives.nativeURL(relative, write: true)
+        } catch {
+            let drive = ExternalDrives.driveName(library: relative)
+            throw InstallError(drive.map { "The drive “\($0)” isn't connected or can't be written to. Connect it and try again." }
+                               ?? error.localizedDescription)
+        }
+    }
 
     /// Whether an entry names one of the game's own programs (FFXIVInstall.programs),
     /// from its path alone: views call this, so it never touches the disk.
@@ -37,6 +56,8 @@ import SwiftUI
         let kind: Kind
         /// The entry being patched; nil while an install fetches its boot programs.
         var entryID: UUID?
+        /// The install's folder relative to drive_c, and where it is written.
+        let relativeRoot: String
         let root: URL
         var detail: String
         var done: Int64 = 0
@@ -80,26 +101,28 @@ import SwiftUI
     }
 
     nonisolated static func freeSpace(at url: URL) -> Int64 {
-        let probe = URL(fileURLWithPath: url.path)   // a fresh URL: resource values are cached per URL
-        return (try? probe.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
-            .volumeAvailableCapacityForImportantUsage ?? 0
+        FFXIVPatchRunner.availableCapacity(at: url)
     }
 
     // MARK: Install
 
-    /// A fresh install at the official folder: the folders and version files, the
-    /// boot programs from the boot patches, then a library entry, handed to `opened`
-    /// (its Game details page, where Play's sign-in brings the game's patches).
-    func install(expansions: Bool, opened: @escaping (LibraryEntry) -> Void) {
+    /// A fresh install on this device (`drive` nil) or an external drive: the folders
+    /// and version files, the boot programs from the boot patches, then a library
+    /// entry, handed to `opened` (its Game details page, where Play's sign-in brings
+    /// the game's patches). Every expansion is reported, as the official launcher
+    /// does; whether the server leaves out ones the account lacks is unconfirmed.
+    func install(drive: String?, opened: @escaping (LibraryEntry) -> Void) {
         guard job == nil else { error = "A FINAL FANTASY XIV download is already running."; return }
         error = nil
+        let relative = Self.relativeRoot(drive: drive)
+        let root: URL
+        do { root = try Self.nativeRoot(relative) } catch { self.error = error.localizedDescription; return }
         self.opened = opened
-        let root = Self.officialRoot
-        job = Job(kind: .install, entryID: nil, root: root, detail: "Preparing…")
-        log("install: start, expansions=\(expansions ? 1 : 0)")
+        job = Job(kind: .install, entryID: nil, relativeRoot: relative, root: root, detail: "Preparing…")
+        log("install: start on \(drive ?? "this device")")
         Task { @MainActor in
             do {
-                let boot = try await Task.detached(priority: .utility) { try await Self.prepare(root: root, expansions: expansions) }.value
+                let boot = try await Task.detached(priority: .utility) { try await Self.prepare(root: root, relative: relative) }.value
                 patches = boot
                 job?.total = boot.reduce(0) { $0 + $1.size }
                 start()
@@ -110,19 +133,17 @@ import SwiftUI
     }
 
     /// The folders and version files of a fresh install, then the boot check's list.
-    nonisolated private static func prepare(root: URL, expansions: Bool) async throws -> [SquareEnixPatch] {
+    nonisolated private static func prepare(root: URL, relative: String) async throws -> [SquareEnixPatch] {
         let files = FileManager.default
         if let walker = files.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey]) {
             while let url = walker.nextObject() as? URL {
                 if (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
-                    throw InstallError("drive_c › \(folder) already has files. Add that copy with + instead, or move it away first.")
+                    throw InstallError("\(relative.replacingOccurrences(of: "/", with: " › ")) already has files. Add that copy with + instead, or move it away first.")
                 }
             }
         }
-        var versionFiles = [root.appendingPathComponent("boot/ffxivboot.ver"), root.appendingPathComponent("game/ffxivgame.ver")]
-        if expansions {
-            versionFiles += (1...5).map { root.appendingPathComponent("game/sqpack/ex\($0)/ex\($0).ver") }
-        }
+        let versionFiles = [root.appendingPathComponent("boot/ffxivboot.ver"), root.appendingPathComponent("game/ffxivgame.ver")]
+            + (1...5).map { root.appendingPathComponent("game/sqpack/ex\($0)/ex\($0).ver") }
         for file in versionFiles {
             try files.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
             try Data(baseVersion.utf8).write(to: file, options: .atomic)
@@ -145,13 +166,16 @@ import SwiftUI
 
     // MARK: Update
 
-    /// Applies the patches sign-in reported for an entry's install.
-    func update(entry: LibraryEntry, root: URL, update: SquareEnixUpdate) {
+    /// Applies the patches sign-in reported for an entry's install, wherever it is.
+    func update(entry: LibraryEntry, update: SquareEnixUpdate) {
         guard job == nil else { error = "A FINAL FANTASY XIV download is already running."; return }
         guard !update.patches.isEmpty else { return }
         error = nil
+        let relative = LibraryModel.shared.relativeRoot(entry)
+        let root: URL
+        do { root = try Self.nativeRoot(relative) } catch { self.error = error.localizedDescription; return }
         patches = update.patches
-        job = Job(kind: .update, entryID: entry.id, root: root, detail: "Starting…", total: update.downloadBytes)
+        job = Job(kind: .update, entryID: entry.id, relativeRoot: relative, root: root, detail: "Starting…", total: update.downloadBytes)
         log("update: \(update.patches.count) \(update.stage.rawValue) patches, \(update.downloadBytes) bytes, to \(update.target ?? "?")")
         start()
     }
@@ -267,8 +291,8 @@ import SwiftUI
         self.job = nil
         let model = LibraryModel.shared
         if job.kind == .install {
-            let entry = model.entries.first { Self.isFFXIV($0) && model.relativeRoot($0) == Self.folder }
-                ?? LibraryEntry(title: Self.title, relativePath: Self.folder + "/boot/ffxivboot64.exe", bits: 64)
+            let entry = model.entries.first { Self.isFFXIV($0) && model.relativeRoot($0) == job.relativeRoot }
+                ?? LibraryEntry(title: Self.title, relativePath: job.relativeRoot + "/boot/ffxivboot64.exe", bits: 64)
             model.save(entry)
             Task { await model.refreshMetadata(entry.id) }
             opened?(entry)
@@ -312,7 +336,6 @@ struct FFXIVSection<Cells: View>: View {
 
     var body: some View {
         let collapsible = SteamGamesSection.collapsible
-        let official = model.entries.contains { FFXIVLibrary.isFFXIV($0) && model.relativeRoot($0) == FFXIVLibrary.folder }
         VStack(alignment: .leading, spacing: 14) {
             LibrarySectionHeader(title: "FINAL FANTASY XIV", count: entries.count, collapsed: collapsible ? $hidden : nil) {
                 if ffxiv.job != nil, ffxiv.job?.paused == false { ProgressView().accessibilityLabel("Downloading FINAL FANTASY XIV") }
@@ -320,7 +343,7 @@ struct FFXIVSection<Cells: View>: View {
             if !(hidden && collapsible) {
                 if let job = ffxiv.job, job.kind == .install, job.entryID == nil {
                     FFXIVJobStatus(job: job)
-                } else if entries.isEmpty && !official {
+                } else if entries.isEmpty {
                     FFXIVInstallCard { installing = true }
                 }
                 if let error = ffxiv.error, ffxiv.job == nil, !installing {
@@ -328,7 +351,7 @@ struct FFXIVSection<Cells: View>: View {
                 }
                 if !entries.isEmpty {
                     cells(entries)
-                    if !official && ffxiv.job == nil {
+                    if ffxiv.job == nil {
                         Button("Install a new copy…") { installing = true }.font(.subheadline)
                     }
                 }
@@ -370,42 +393,50 @@ struct FFXIVInstallSheet: View {
     var opened: (LibraryEntry) -> Void
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var ffxiv = FFXIVLibrary.shared
-    @State private var expansions = true
+    @ObservedObject private var drives = ExternalDrives.shared
+    /// The external drive to install on, by name; empty for this device.
+    @State private var drive = ""
     @State private var free: Int64?
+
+    /// The external drives connected now (ExternalDrives.swift), by name.
+    private var connected: [String] { drives.folders.filter { drives.mounted[$0.id] != nil }.map(\.name) }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    Toggle("Expansions (Heavensward to Dawntrail)", isOn: $expansions)
+                    Picker("Install on", selection: $drive) {
+                        Text(UIDevice.current.userInterfaceIdiom == .pad ? "This iPad" : "This iPhone").tag("")
+                        ForEach(connected, id: \.self) { Text($0).tag($0) }
+                    }
+                    LabeledContent("Folder", value: FFXIVLibrary.relativeRoot(drive: drive.isEmpty ? nil : drive)
+                        .replacingOccurrences(of: "External/", with: "").replacingOccurrences(of: "/", with: " › "))
+                    if let free { LabeledContent("Free there", value: ffxivBytes(free)) }
                 } footer: {
-                    Text(expansions
-                         ? "About 152 GB to download and 130 GB installed (October 2026)."
-                         : "About 81 GB to download and 69 GB installed (October 2026). Expansions can't be added later from here yet.")
-                }
-                Section {
-                    LabeledContent("Install folder", value: "drive_c › Program Files (x86) › SquareEnix")
-                    if let free { LabeledContent("Free on this device", value: ffxivBytes(free)) }
-                } footer: {
-                    Text("Madeira first downloads the game's boot programs (about 22 MB). Then sign in from the game's page, and Madeira lists and downloads the rest; that needs a FINAL FANTASY XIV license on your account. Downloads continue while Madeira is open, and in the background where iOS allows it.")
+                    Text("Madeira first downloads the game's boot programs (about 22 MB). Then sign in from the game's page, and Madeira lists and downloads the rest, which needs a FINAL FANTASY XIV license on your account: about 152 GB to download and 130 GB installed with every expansion (October 2026). Downloads continue while Madeira is open, and in the background where iOS allows it. Drives are added in Settings › External drives.")
                 }
                 if let error = ffxiv.error {
                     Section { Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red) }
                 }
                 Section {
                     Button("Install") {
-                        ffxiv.install(expansions: expansions, opened: opened)
-                        dismiss()
+                        ffxiv.install(drive: drive.isEmpty ? nil : drive, opened: opened)
+                        if ffxiv.error == nil { dismiss() }
                     }
-                    .disabled(ffxiv.job != nil)
+                    .disabled(ffxiv.job != nil || !(drive.isEmpty || connected.contains(drive)))
                 }
             }
             .navigationTitle("Install FINAL FANTASY XIV")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
-            .task {
+            .task(id: drive) {
+                free = nil
+                let place = drive.isEmpty ? nil : "External/" + drive
                 let documents = LibraryModel.documents
-                free = await Task.detached { FFXIVLibrary.freeSpace(at: documents) }.value
+                free = await Task.detached {
+                    guard let place else { return FFXIVLibrary.freeSpace(at: documents) }
+                    return (try? ExternalDrives.nativeURL(place)).map { FFXIVLibrary.freeSpace(at: $0) }
+                }.value
             }
         }
     }
@@ -463,8 +494,8 @@ struct FFXIVUpdateSection: View {
                     LabeledContent("Free", value: ffxivBytes(space.free))
                 }
                 Button("Update") {
-                    ffxiv.update(entry: entry, root: install.root, update: update)
-                    self.update = nil
+                    ffxiv.update(entry: entry, update: update)
+                    if ffxiv.error == nil { self.update = nil }
                 }
                 .disabled(ffxiv.job != nil || space == nil || (space.map { $0.free < $0.needed } ?? true))
                 Button("Not Now", role: .cancel) { self.update = nil }
@@ -474,9 +505,11 @@ struct FFXIVUpdateSection: View {
                 Text(footer(update))
             }
             .task(id: update) {
-                let root = install.root, patches = update.patches
+                let relative = LibraryModel.shared.relativeRoot(entry), patches = update.patches
                 space = await Task.detached(priority: .utility) {
-                    (FFXIVLibrary.spaceNeeded(patches, root: root), FFXIVLibrary.freeSpace(at: root))
+                    // The real folder, so an install on a drive measures that drive.
+                    guard let root = try? FFXIVLibrary.nativeRoot(relative) else { return nil }
+                    return (FFXIVLibrary.spaceNeeded(patches, root: root), FFXIVLibrary.freeSpace(at: root))
                 }.value
             }
         } else if let error = ffxiv.error, ffxiv.job == nil {

@@ -283,19 +283,29 @@ bytes that were there, which a wrong offset, path or field would not.
 
 ## Madeira's design (agreed 2026-10-31)
 
-Nothing here is built yet.
+Built on 2026-10-31 (`FFXIVPatcher.swift`, `FFXIVLibrary.swift`) and tried on
+an iPhone up to the Update section's 204-patch list; no full install or
+update has run on a device yet.
 
 - **Library section:** "FINAL FANTASY XIV" (`app/Madeira/FFXIVLibrary.swift`,
   built 2026-10-31), shown like the Epic Games section and switched by
-  `MADEIRA_FFXIV` (default on). With FFXIV entries elsewhere than the official
-  folder, a link under them installs a new copy. Not installed: an
-  install card whose sheet shows the download and installed sizes, the
-  expansion choice and progress. Installed: the game's card, opening Game
+  `MADEIRA_FFXIV` (default on). With no FFXIV entry, an install card; with
+  some, an "Install a new copy…" link under them. The install sheet picks
+  the place (this device or a connected external drive), shows its free
+  space and the approximate sizes, and the section shows the progress.
+  Installed: the game's card, opening Game
   details, which offers **Update** when sign-in reports pending patches.
   Recognized FFXIV entries (`docs/SQUARE_ENIX_SIGNIN.md`) move here from
   "Other games" and are adopted, not duplicated.
-- **Install path:** `drive_c/Program Files (x86)/SquareEnix/FINAL FANTASY XIV - A Realm Reborn`,
+- **Install path:** on this device, `drive_c/Program Files (x86)/SquareEnix/FINAL FANTASY XIV - A Realm Reborn`,
   the official one, so the existing recognition and the probe keep working.
+  On an external drive (`docs/EXTERNAL_STORAGE.md`),
+  `drive_c/External/<drive>/SquareEnix/FINAL FANTASY XIV - A Realm Reborn`:
+  the entry keeps that drive_c path for Wine, and installs and updates
+  write through `ExternalDrives.nativeURL`, which refuses a drive that is
+  disconnected, no longer the registered one, or read-only. Free space is
+  the volume's "important usage" figure, or its plain available capacity
+  where a drive doesn't report that.
 - **Account:** the existing per-entry Keychain sign-in. The installer makes
   the entry and the folder first, then runs the sign-in sheet to fetch the
   list. Done (2026-10-31): sign-in's "update needed" error now carries a
@@ -304,7 +314,10 @@ Nothing here is built yet.
   line that looks like a patch but doesn't parse, whose hashes don't cover
   its size, or whose URL isn't `http://patch-dl.ffxiv.com/…` rejects the
   whole list.
-- **Expansions:** all five by default; base game only as an option.
+- **Expansions:** all five are always reported (`exN.ver` written at
+  `2012.01.01.0000.0000`), as the official launcher installed them; there is
+  no choice (dropped 2026-10-31). Whether the server leaves out expansions an
+  account doesn't own is **unknown**: the only account tried owns them all.
 - **Fresh install, with no Square Enix files in Madeira:**
   1. write `boot/ffxivboot.ver` = `2012.01.01.0000.0000`; the boot check then
      lists `D2013.06.18.0000.0000` and `D2026.08.18.0000.0001` (2026-10-31),

@@ -52,7 +52,8 @@ Removing an entry never removes the game's files or saves.
   installed, with their count; a **Sign in to Steam** card when signed out),
   its **Not installed** group (the account's other games, with their count),
   then **FINAL FANTASY XIV** (its recognized entries; with none, an install
-  card that downloads the game from Square Enix, `docs/FFXIV_PATCHING.md`;
+  card that downloads the game from Square Enix to this device or an
+  external drive, `docs/FFXIV_PATCHING.md`;
   `env.MADEIRA_FFXIV = 0` turns the section off and puts its entries back
   in Other games), then **Other games** (the games you added; **+** in the navigation bar adds one). Tapping
   **Steam** or **Other games** collapses it; **Not installed** folds on its
