@@ -267,6 +267,46 @@ The ex1 patch `D2026.08.20.0000.0000` has two `A` commands (one into each of
 each). Reapplying it to clones of the already-patched files wrote the same
 bytes that were there, which a wrong offset, path or field would not.
 
+## Madeira's design (agreed 2026-10-31)
+
+Nothing here is built yet.
+
+- **Library section:** "FINAL FANTASY XIV", shown like the Epic Games
+  section and switched by `MADEIRA_FFXIV` (default on). Not installed: an
+  install card whose sheet shows the download and installed sizes, the
+  expansion choice and progress. Installed: the game's card, opening Game
+  details, which offers **Update** when sign-in reports pending patches.
+  Recognized FFXIV entries (`docs/SQUARE_ENIX_SIGNIN.md`) move here from
+  "Other games" and are adopted, not duplicated.
+- **Install path:** `drive_c/Program Files (x86)/SquareEnix/FINAL FANTASY XIV - A Realm Reborn`,
+  the official one, so the existing recognition and the probe keep working.
+- **Account:** the existing per-entry Keychain sign-in. The installer makes
+  the entry and the folder first, then runs the sign-in sheet to fetch the
+  list. Session registration returns the pending patches as a result
+  instead of only throwing "update needed".
+- **Expansions:** all five by default; base game only as an option.
+- **Fresh install, with no Square Enix files in Madeira:**
+  1. write `boot/ffxivboot.ver` = `2012.01.01.0000.0000`; the boot check then
+     lists `D2013.06.18.0000.0000` and `D2026.08.18.0000.0001` (2026-10-31),
+     which produce the boot programs the boot hash needs;
+  2. write `game/ffxivgame.ver` and each `game/sqpack/exN/exN.ver` =
+     `2012.01.01.0000.0000`;
+  3. sign in; session registration returns the full list;
+  4. per patch, in list order: check free space against field 2, download
+     (resuming with ranges), check each 50,000,000-byte block's SHA-1, apply,
+     delete, and write the version file when field 5 is a version.
+  An update is steps 3 and 4 on an existing install.
+- **Applier:** new Swift code from this document. It refuses any command
+  not confirmed here rather than guess.
+- **Downloads:** the background-download helper Steam and Epic share, paused
+  during a game session; an App Transport Security exception for
+  `patch-dl.ffxiv.com`.
+- **Order of work:** update first, then fresh install. With no outdated
+  install at hand, the chain is first proven on the Mac by rebuilding one
+  expansion from `2012.01.01.0000.0000` and comparing it with an installed
+  copy; a copy stopped partway serves as an outdated install for testing
+  Update.
+
 ## Tools
 
 - **`tools/zipatch-inspect.py survey <patch>`** checks every chunk's CRC32
