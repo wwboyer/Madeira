@@ -91,7 +91,7 @@ enum SquareEnixSignInError: Error, Equatable, LocalizedError {
     case unexpectedReply(SquareEnixStep)
     /// Sign-in or the gate is closed (maintenance).
     case closed
-    /// The boot files are not current; the target version when the patch list names one.
+    /// The boot or game files are not current; the target version when the patch list names one.
     case gameUpdateNeeded(String?)
     /// Square Enix's own message, shown as sent.
     case refused(String)
@@ -653,6 +653,13 @@ final class SquareEnixSignIn {
         let (sessionBody, sessionReply) = try await send(
             SquareEnixProtocol.sessionRequest(gameVersion: versions.game, sid: account.sid, body: body, userAgent: patchAgent),
             step: .session)
+        // An outdated game gets a patch list AND an X-Patch-Unique-Id (2026-10-31),
+        // so a list in the body stops here before the header is trusted.
+        let pending = SquareEnixProtocol.patchTargets(sessionBody)
+        if !pending.isEmpty {
+            log("[sqex-signin] session: HTTP \(sessionReply.statusCode), \(pending.count) game patches pending, to \(pending.max()!)")
+            throw SquareEnixSignInError.gameUpdateNeeded(pending.max())
+        }
         guard let sessionID = SquareEnixProtocol.sessionID(from: sessionReply) else {
             let targets = SquareEnixProtocol.patchTargets(sessionBody)
             log("[sqex-signin] session: HTTP \(sessionReply.statusCode), no X-Patch-Unique-Id, body \(sessionBody.count) bytes" +
