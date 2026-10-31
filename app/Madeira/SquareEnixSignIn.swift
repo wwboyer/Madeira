@@ -91,8 +91,8 @@ enum SquareEnixSignInError: Error, Equatable, LocalizedError {
     case unexpectedReply(SquareEnixStep)
     /// Sign-in or the gate is closed (maintenance).
     case closed
-    /// The boot or game files are not current; the target version when the patch list names one.
-    case gameUpdateNeeded(String?)
+    /// The boot or game files are not current, with the patches to apply when the server listed them.
+    case updateNeeded(SquareEnixUpdate)
     /// Square Enix's own message, shown as sent.
     case refused(String)
     case notPlayable
@@ -110,8 +110,8 @@ enum SquareEnixSignInError: Error, Equatable, LocalizedError {
             return "Square Enix sent a reply Madeira doesn't understand. Try again later."
         case .closed:
             return "FINAL FANTASY XIV is under maintenance. Check the FFXIV Lodestone for more details."
-        case .gameUpdateNeeded(let target):
-            return "The game needs an update" + (target.map { " (to \($0))" } ?? "") + " before you can play."
+        case .updateNeeded(let update):
+            return "The game needs an update" + (update.target.map { " (to \($0))" } ?? "") + " before you can play."
         case .refused(let message):
             return message
         case .notPlayable:
@@ -127,6 +127,38 @@ enum SquareEnixSignInError: Error, Equatable, LocalizedError {
 }
 
 /// A FINAL FANTASY XIV installation: the folder holding boot/ and game/.
+/// One line of a patch list: the boot check's (step 2) or session registration's (step 6).
+/// Field meanings: docs/FFXIV_PATCHING.md, "Game patch lists".
+struct SquareEnixPatch: Equatable, Sendable {
+    /// `boot`, `ffxiv` (the base game) or `exN`, from the URL.
+    let repository: String
+    let size: Int64
+    /// The repository's bytes and file count once this patch is applied, `.ver` and `.bck` not counted.
+    let installedSize: Int64
+    let fileCount: Int
+    /// The version this patch brings the repository to, or a split part's name (`H2024.05.31.0000.0000a`).
+    let target: String
+    /// The SHA-1 of each `hashBlockSize` bytes, in order. Boot lists carry none.
+    let hashBlockSize: Int
+    let sha1: [String]
+    let url: URL
+
+    /// Whether applying this patch leaves the repository at a version (the last part of a split does).
+    var setsVersion: Bool { FFXIVInstall.isVersion(target) }
+}
+
+/// What an update needs: the stage that reported it and the patches, in the order to apply them.
+struct SquareEnixUpdate: Equatable, Sendable {
+    enum Stage: String, Sendable { case boot, game }
+    let stage: Stage
+    /// Empty when the server gave no list (an unknown boot version).
+    let patches: [SquareEnixPatch]
+
+    /// The newest version the patches reach, for messages.
+    var target: String? { patches.filter(\.setsVersion).map(\.target).max() }
+    var downloadBytes: Int64 { patches.reduce(0) { $0 + $1.size } }
+}
+
 struct FFXIVInstall: Equatable {
     let root: URL
 
@@ -490,8 +522,8 @@ enum SquareEnixProtocol {
 
     enum BootCheck: Equatable {
         case current
-        /// The version the patch list ends at, when it names one.
-        case update(String?)
+        /// The boot patches to apply; empty when the list couldn't be read.
+        case update([SquareEnixPatch])
         case unknownVersion
         case unexpected(Int)
     }
@@ -504,7 +536,7 @@ enum SquareEnixProtocol {
         case 200:
             let targets = patchTargets(body)
             return targets.isEmpty && body.allSatisfy({ $0 == 0x20 || $0 == 0x0A || $0 == 0x0D || $0 == 0x09 })
-                ? .current : .update(targets.last)
+                ? .current : .update(patchList(body) ?? [])
         case 404: return .unknownVersion
         default: return .unexpected(status)
         }
@@ -518,6 +550,47 @@ enum SquareEnixProtocol {
             guard fields.count >= 6 else { return nil }
             let target = fields[4].trimmingCharacters(in: .whitespaces)
             return FFXIVInstall.isVersion(target) ? target : nil
+        }
+    }
+
+    /// Every patch line of a boot or game patch list, in order: boot lines have six
+    /// tab-separated fields, game lines nine (with the SHA-1s). nil when a line has
+    /// either shape but doesn't parse, its hashes don't cover its size, or its URL
+    /// isn't on patch-dl.ffxiv.com, so a damaged list is never half-applied.
+    static func patchList(_ body: Data) -> [SquareEnixPatch]? {
+        var patches: [SquareEnixPatch] = []
+        for line in String(decoding: body, as: UTF8.self).components(separatedBy: .newlines) {
+            let fields = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+            guard fields.count == 6 || fields.count == 9 else { continue }
+            guard let size = Int64(fields[0]), size > 0, let installed = Int64(fields[1]),
+                  let files = Int(fields[2]), Int(fields[3]) != nil, !fields[4].isEmpty,
+                  let url = URL(string: fields[fields.count - 1]), url.scheme == "http", url.host == "patch-dl.ffxiv.com",
+                  let repository = repository(of: url)
+            else { return nil }
+            var blockSize = 0, hashes: [String] = []
+            if fields.count == 9 {
+                guard fields[5] == "sha1", let block = Int(fields[6]), block > 0 else { return nil }
+                hashes = fields[7].split(separator: ",").map(String.init)
+                guard Int64(hashes.count) == (size + Int64(block) - 1) / Int64(block),
+                      hashes.allSatisfy({ $0.count == 40 && $0.allSatisfy(\.isHexDigit) }) else { return nil }
+                blockSize = block
+            }
+            patches.append(SquareEnixPatch(repository: repository, size: size, installedSize: installed, fileCount: files,
+                                           target: fields[4], hashBlockSize: blockSize, sha1: hashes, url: url))
+        }
+        return patches
+    }
+
+    /// `boot`, `ffxiv` or `exN` from a patch URL's path: /boot/{id}/, /game/{id}/ or /game/exN/{id}/.
+    static func repository(of url: URL) -> String? {
+        let parts = url.path.split(separator: "/").map(String.init)
+        let isID = { (text: String) in text.count == 8 && text.allSatisfy(\.isHexDigit) }
+        switch parts.count {
+        case 3 where parts[0] == "boot" && isID(parts[1]): return "boot"
+        case 3 where parts[0] == "game" && isID(parts[1]): return "ffxiv"
+        case 4 where parts[0] == "game" && isID(parts[2]) && parts[1].hasPrefix("ex") && Int(parts[1].dropFirst(2)) != nil:
+            return parts[1]
+        default: return nil
         }
     }
 
@@ -601,8 +674,8 @@ final class SquareEnixSignIn {
         log("[sqex-signin] boot check: HTTP \(bootReply.statusCode) \(bootCheck)")
         switch bootCheck {
         case .current: break
-        case .update(let target): throw SquareEnixSignInError.gameUpdateNeeded(target)
-        case .unknownVersion: throw SquareEnixSignInError.gameUpdateNeeded(nil)
+        case .update(let patches): throw SquareEnixSignInError.updateNeeded(SquareEnixUpdate(stage: .boot, patches: patches))
+        case .unknownVersion: throw SquareEnixSignInError.updateNeeded(SquareEnixUpdate(stage: .boot, patches: []))
         case .unexpected: throw SquareEnixSignInError.unexpectedReply(.bootCheck)
         }
 
@@ -655,10 +728,16 @@ final class SquareEnixSignIn {
             step: .session)
         // An outdated game gets a patch list AND an X-Patch-Unique-Id (2026-10-31),
         // so a list in the body stops here before the header is trusted.
-        let pending = SquareEnixProtocol.patchTargets(sessionBody)
-        if !pending.isEmpty {
-            log("[sqex-signin] session: HTTP \(sessionReply.statusCode), \(pending.count) game patches pending, to \(pending.max()!)")
-            throw SquareEnixSignInError.gameUpdateNeeded(pending.max())
+        if !SquareEnixProtocol.patchTargets(sessionBody).isEmpty {
+            guard let patches = SquareEnixProtocol.patchList(sessionBody), !patches.isEmpty else {
+                log("[sqex-signin] session: HTTP \(sessionReply.statusCode), a patch list that doesn't parse")
+                throw SquareEnixSignInError.unexpectedReply(.session)
+            }
+            let update = SquareEnixUpdate(stage: .game, patches: patches)
+            let repositories = Dictionary(grouping: patches, by: \.repository).map { "\($0.key)=\($0.value.count)" }.sorted()
+            log("[sqex-signin] session: HTTP \(sessionReply.statusCode), \(patches.count) game patches pending " +
+                "(\(repositories.joined(separator: " ")), \(update.downloadBytes) bytes, to \(update.target ?? "?")")
+            throw SquareEnixSignInError.updateNeeded(update)
         }
         guard let sessionID = SquareEnixProtocol.sessionID(from: sessionReply) else {
             let targets = SquareEnixProtocol.patchTargets(sessionBody)

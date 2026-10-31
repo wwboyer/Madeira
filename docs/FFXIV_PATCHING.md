@@ -296,8 +296,12 @@ Nothing here is built yet.
   the official one, so the existing recognition and the probe keep working.
 - **Account:** the existing per-entry Keychain sign-in. The installer makes
   the entry and the folder first, then runs the sign-in sheet to fetch the
-  list. Session registration returns the pending patches as a result
-  instead of only throwing "update needed".
+  list. Done (2026-10-31): sign-in's "update needed" error now carries a
+  `SquareEnixUpdate`, the stage (boot or game) and the parsed list
+  (`SquareEnixProtocol.patchList`), in place of the bare target version. A
+  line that looks like a patch but doesn't parse, whose hashes don't cover
+  its size, or whose URL isn't `http://patch-dl.ffxiv.com/…` rejects the
+  whole list.
 - **Expansions:** all five by default; base game only as an option.
 - **Fresh install, with no Square Enix files in Madeira:**
   1. write `boot/ffxivboot.ver` = `2012.01.01.0000.0000`; the boot check then
