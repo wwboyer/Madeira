@@ -13,13 +13,13 @@ steps 2 and 6 return the patch lists. Mark anything unconfirmed as
 |---|---|
 | Boot patch list (sign-in step 2) | confirmed |
 | Boot patch download | confirmed |
-| Game patch list (sign-in step 6, outdated game) | **next**: `tools/sqex-signin-probe.py --game-version 2012.01.01.0000.0000 … --save-reply …` |
-| Game patch download | confirmed: public, same host; checked with SHA-1 (per 50,000,000-byte block, inferred) |
+| Game patch list (sign-in step 6, outdated game) | confirmed: format, hashes and the full fresh-install list (2026-10-31) |
+| Game patch download | confirmed: public, same host; one SHA-1 per 50,000,000-byte block, from the list |
 | ZiPatch container, FHDR, APLY | confirmed |
 | SQPK F (file) operations | confirmed: a boot patch rebuilt the installed boot files exactly |
 | SQPK A and H (dat and index files) | confirmed: reapplying ex1's newest patch to its patched dats changed nothing |
 | SQPK D and E | from xiv.dev only; not seen in a patch yet |
-| Fresh install | starting state and boot patch confirmed (official Mac app); the game patch list for it is unknown |
+| Fresh install | confirmed: 204 patches, 152.15 GB to download, 130.30 GB installed |
 
 ## Patch lists
 
@@ -27,8 +27,68 @@ steps 2 and 6 return the patch lists. Mark anything unconfirmed as
   one tab-separated line: size in bytes, three unknown fields, the target
   version, and the download URL. One patch can span many versions: a 2015
   boot version got a single patch straight to the current version.
-- **Game:** when the game is outdated, step 6 replies without
-  `X-Patch-Unique-Id`. What its body holds is unknown.
+- **Game:** when the game is outdated, step 6 replies `200` with a
+  `multipart/mixed` list, **and with an `X-Patch-Unique-Id`**, so the header
+  alone does not mean the game may start. See "Game patch lists" below.
+
+### Game patch lists
+
+Recorded with `tools/sqex-signin-probe.py --save-reply` on 2026-10-31,
+reporting game version `2012.01.01.0000.0000` (the fresh-install state).
+
+- **Headers:** `X-Latest-Version` echoes the version reported, not the newest
+  one. `Content-Location` is `ffxivpatch/4e9a232b/vercheck.dat`.
+- **One section for all repositories:** a single multipart part,
+  `Content-Location: ffxivpatch/4e9a232b/metainfo/2012.01.01.0000.0000.http`,
+  holds every repository's patches: base game first, then ex1 to ex5. Its
+  `X-Patch-Length` (80,770,799,852) is the base game's total only.
+- **Expansions:** listed only for the expansion folders reported. With no
+  `sqpack/exN/exN.ver` at all, only the base game came back (108 patches).
+  With all five reported at `2012.01.01.0000.0000`, all six repositories came
+  back in the one reply (204 patches).
+
+Each patch is one line of nine tab-separated fields:
+
+| # | Example | Meaning |
+|---|---|---|
+| 1 | `20502177` | patch size in bytes |
+| 2 | `69117345196` | the repository's installed size after this patch |
+| 3 | `75` | the repository's file count after this patch |
+| 4 | `11` | **unknown**: 11 for the base game, 4 for each expansion (2 for ex5's first patch); possibly a folder count |
+| 5 | `2026.10.16.0000.0000` | the version after this patch; for a part of a split patch other than the last, the part's name (`H2024.05.31.0000.0000a`) |
+| 6 | `sha1` | hash type |
+| 7 | `50000000` | hash block size |
+| 8 | `3bb5…,86a6…` | one hash per block, comma-separated: exactly ceil(size / block size) of them for all 204 patches |
+| 9 | `http://patch-dl.ffxiv.com/game/…` | download URL |
+
+Fields 2 and 3 were checked against the installed game at the newest
+versions. They count every file of the repository under `game/sqpack/{ffxiv |
+exN}` and `game/movie/{ffxiv | exN}` (the base game also counts the files
+directly in `game/`), but not the 20-byte `.ver` and `.bck` files. All six
+matched exactly. Field 2 is what a disk-space check needs.
+
+### The fresh-install chain
+
+| Repository | Patches | Starts with | Ends at | Download | Installed |
+|---|---|---|---|---|---|
+| Base game | 108 | `H2024.05.31.0000.0000a` to `ah` (34 parts) | `2026.10.16.0000.0000` | 80.77 GB | 69.12 GB |
+| ex1 | 13 | `H2024.05.31.0000.0000a` to `e` | `2026.08.20.0000.0000` | 9.21 GB | 7.35 GB |
+| ex2 | 13 | `H2024.05.31.0000.0000a` to `f` | `2026.07.06.0000.0000` | 11.54 GB | 9.84 GB |
+| ex3 | 18 | `H2024.05.31.0000.0000a` to `h` | `2026.10.16.0000.0000` | 13.51 GB | 11.76 GB |
+| ex4 | 18 | `H2024.05.31.0000.0000a` to `j` | `2026.10.16.0000.0000` | 16.85 GB | 15.43 GB |
+| ex5 | 34 | `D2024.05.20.0000.0000`, then `D2024.05.25.0000.0000` to `.0004.0000` | `2026.10.16.0000.0000` | 20.26 GB | 16.81 GB |
+| **Total** | **204** | | | **152.15 GB** | **130.30 GB** |
+
+- **History patches** (`H`) rebuild a repository from nothing up to
+  `2024.05.31.0000.0000`. ex5 has none; its first patch (387 MB, 2 files)
+  is a `D` patch.
+- **Splits:** no part is over 1.5 GB (at most 30 hashes). `H` parts take a
+  letter suffix (`a` to `z`, then `aa`, `ab`, …). Split `D` patches step the
+  third version group instead (`2024.10.25.0000.0000`, `.0001.0000`, …), and
+  each part's field 5 is its own name.
+- **Disk:** applying each patch and deleting it before the next needs at
+  least the installed size plus 1.5 GB (an estimate: it assumes no patch
+  grows the files beyond their final size along the way).
 
 ## Downloads
 
@@ -224,11 +284,12 @@ bytes that were there, which a wrong offset, path or field would not.
 
 ## Open questions
 
-- What step 6 returns for an outdated game, including how it gives each
-  patch's block hashes. Game patch downloads don't need a session.
-- What step 6 returns for a fresh install (`2012.01.01.0000.0000`): whether
-  expansions come in the same list, and what the expansion version files
-  should say before they exist.
+- Field 4 of a game patch list line.
+- What step 6 replies for a current game (the status code); the patch-list
+  case is the one recorded.
+- Whether the official launcher reports `2012.01.01.0000.0000` for missing
+  expansions in its first registration, or registers again after the base
+  game. Both give a usable list.
 - Whether `D` and `E` behave as xiv.dev describes. No patch seen so far
   uses them; the fresh-install chain may.
 - `H` commands for index files (none seen yet).
@@ -257,6 +318,8 @@ code is copied.
     install on 2026-10-29
   - the newest game patches of the base game (`D2026.10.16.0000.0000`) and
     ex1 (`D2026.08.20.0000.0000`), downloaded and surveyed
+  - session registration's reply for game version `2012.01.01.0000.0000`,
+    with and without expansions, recorded by the probe (session ID redacted)
 
 ## Confirmation log (2026-10-30)
 
@@ -270,3 +333,5 @@ code is copied.
 | Fresh install | the official Mac app's bottle template | `game/` holds only `ffxivgame.ver` (`2012.01.01.0000.0000`) and the opening movies; boot `2018.12.14.0000.0001` |
 | Boot for a fresh install | boot check for `2018.12.14.0000.0001` (no sign-in needed) | one patch, `D2026.08.18.0000.0001` (20,820,391 bytes) |
 | SQPK A and H | `zipatch-inspect.py apply-sqpk` of ex1 `D2026.08.20.0000.0000` on APFS clones of ex1 at that version | 2 `A` and 4 `H` wrote identical bytes; both dats still byte-identical to the install |
+| Game patch lists | `sqex-signin-probe.py --game-version 2012.01.01.0000.0000 --save-reply`, once with no expansions and once with ex1–5 at `2012.01.01.0000.0000` (2026-10-31) | 108 base-game patches; 204 across all six repositories; `X-Patch-Unique-Id` present; hash counts = ceil(size / 50,000,000) for every line |
+| List fields 2 and 3 | compared with the installed game at the newest versions | installed bytes and file count of each repository (sqpack + movie, without `.ver`/`.bck`), exact for all six |
