@@ -2139,7 +2139,29 @@ static DECLSPEC_NORETURN void exit_thread( int status )
 
     if (InterlockedDecrement( &nb_threads ) <= 0) exit_process( status );
 
-    if ((teb = InterlockedExchangePointer( &prev_teb, NtCurrentTeb() )))
+    /* Opt-in, env.MADEIRA_EA_CEF = 1: 32-bit helper processes started one after
+     * another can be given the same WoW window again, TEB addresses included.
+     * prev_teb is a raw pointer, so it can then name the thread that is exiting
+     * right now: joining itself fails and the old path frees the caller's own
+     * stack. With the switch the hand-off goes through
+     * ios_ea_reap_exited_thread (virtual_ios.c), which checks the identity of
+     * the previous thread first. Unset: the upstream prev_teb hand-off.
+     *
+     * ml2290 (testers' log, 2026-10-31): the checked hand-off is the default.
+     * A launcher installer ran its 32-bit VC++ redistributables one after the
+     * other; the second got the first's window and TEB, its worker thread freed
+     * its own kernel stack at exit (unregister_view+4, the fault waiting for the
+     * virtual_mutex it held) and the installer waited on that thread forever.
+     * env.MADEIRA_THREAD_REAP_CHECKED = 0 restores the upstream hand-off
+     * (MADEIRA_EA_CEF = 1 still selects the checked one). */
+    const char *ea_cef = getenv( "MADEIRA_EA_CEF" );
+    const char *checked = getenv( "MADEIRA_THREAD_REAP_CHECKED" );
+    if (!(checked && checked[0] == '0') || (ea_cef && !strcmp( ea_cef, "1" )))
+    {
+        extern void ios_ea_reap_exited_thread( TEB *current );
+        ios_ea_reap_exited_thread( NtCurrentTeb() );
+    }
+    else if ((teb = InterlockedExchangePointer( &prev_teb, NtCurrentTeb() )))
     {
         struct ntdll_thread_data *thread_data = (struct ntdll_thread_data *)&teb->GdiTebBatch;
 

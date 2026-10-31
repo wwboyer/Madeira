@@ -25793,6 +25793,95 @@ void virtual_free_teb( TEB *teb )
 }
 
 
+/* [ea-thread-reap]: a launcher's redistributable worker thread left prev_teb
+ * pointing at a TEB in its window. The window was torn down and the next
+ * process reused that exact TEB for a new thread. The unchecked self-join
+ * then released the new thread's live kernel stack: unregister_view+4
+ * faulted writing its prologue, while holding virtual_mutex.
+ *
+ * Snapshot the native and Windows thread identities while the TEB exists.
+ * A pending pointer is never dereferenced until found in the locked live
+ * TEB list. Join outside virtual_mutex, then revalidate under that mutex:
+ * the old window may have been replaced while join was in progress.
+ * Keep the mutex through the free, so teardown/reuse cannot intervene.
+ * It is recursive (virtual_init), as required by the existing alloc path.
+ * ml2290: called for every session (exit_thread); env.MADEIRA_THREAD_REAP_CHECKED=0
+ * without MADEIRA_EA_CEF=1 keeps the old handoff. A stale/unjoinable entry is
+ * discarded, never freed by guess.
+ */
+struct ios_ea_retired_thread
+{
+    TEB *teb;
+    CLIENT_ID client;
+    pthread_t pthread_id;
+};
+
+static struct ios_ea_retired_thread ios_ea_pending_thread;
+
+/* virtual_mutex held; do not read the possibly unmapped retired->teb. */
+static int ios_ea_retired_thread_matches( const struct ios_ea_retired_thread *retired )
+{
+    struct ntdll_thread_data *data;
+
+    LIST_FOR_EACH_ENTRY( data, &teb_list, struct ntdll_thread_data, entry )
+    {
+        TEB *teb = CONTAINING_RECORD( data, TEB, GdiTebBatch );
+        if (teb != retired->teb) continue;
+        return teb->ClientId.UniqueProcess == retired->client.UniqueProcess &&
+               teb->ClientId.UniqueThread == retired->client.UniqueThread &&
+               data->pthread_id && pthread_equal( data->pthread_id, retired->pthread_id );
+    }
+    return 0;
+}
+
+void ios_ea_reap_exited_thread( TEB *current )
+{
+    struct ntdll_thread_data *data, *owned = NULL;
+    struct ios_ea_retired_thread retired;
+    sigset_t sigset;
+    int eligible, joined;
+
+    server_enter_uninterrupted_section( &virtual_mutex, &sigset );
+    /* A laggard of a replaced window can reach here on its native stack.
+     * Validate even the caller through list membership before dereferencing
+     * its TEB, and never enqueue another thread at a recycled address. */
+    LIST_FOR_EACH_ENTRY( data, &teb_list, struct ntdll_thread_data, entry )
+    {
+        if (CONTAINING_RECORD( data, TEB, GdiTebBatch ) != current) continue;
+        if (data->pthread_id && pthread_equal( data->pthread_id, pthread_self() )) owned = data;
+        break;
+    }
+    if (!owned)
+    {
+        server_leave_uninterrupted_section( &virtual_mutex, &sigset );
+        return;
+    }
+    retired = ios_ea_pending_thread;
+    ios_ea_pending_thread.teb = current;
+    ios_ea_pending_thread.client = current->ClientId;
+    ios_ea_pending_thread.pthread_id = owned->pthread_id;
+    eligible = retired.teb && retired.teb != current && retired.pthread_id &&
+               !pthread_equal( retired.pthread_id, pthread_self() ) && ios_ea_retired_thread_matches( &retired );
+    server_leave_uninterrupted_section( &virtual_mutex, &sigset );
+
+    if (!retired.teb) return;
+    joined = eligible ? pthread_join( retired.pthread_id, NULL ) : -1;
+
+    server_enter_uninterrupted_section( &virtual_mutex, &sigset );
+    if (!joined && ios_ea_retired_thread_matches( &retired ))
+        virtual_free_teb( retired.teb );
+    else
+    {
+        static unsigned int logs;
+        if (logs++ < 16)
+            dprintf( 2, "[ea-thread-reap] stale/unjoinable handoff skipped: teb=%p tid=%04x join=%d; "
+                        "no stacks released\n", retired.teb,
+                     (unsigned)(ULONG_PTR)retired.client.UniqueThread, joined );
+    }
+    server_leave_uninterrupted_section( &virtual_mutex, &sigset );
+}
+
+
 /* LDT support */
 
 #if defined(__i386__) || defined(__x86_64__)
