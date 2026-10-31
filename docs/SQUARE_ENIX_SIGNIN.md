@@ -111,8 +111,8 @@ and boot ones exist):
 - **Body:** `\n`-separated lines, with no newline after the last:
   `{boot_version}={boot_hash}`, then `ex{N}\t{version}` for each installed
   expansion, with the version read from `game/sqpack/exN/exN.ver`.
-- **Reply:** when the game is current, the `X-Patch-Unique-Id` header is the
-  session ID. When it is outdated, the reply is `200` with a
+- **Reply:** when the game is current, the reply is `204` and its
+  `X-Patch-Unique-Id` header is the session ID. When it is outdated, the reply is `200` with a
   `multipart/mixed` patch list (the same tab-separated lines as step 2, with
   more fields) **and** an `X-Patch-Unique-Id`, so the header alone does not
   mean the game may start: a reply whose body lists patches means "update
@@ -264,3 +264,4 @@ Never record credentials, SIDs, `_STORED_` values or session IDs here.
 | licenses | `WINEDEBUG` trace | the Windows version restarts itself; the copy stops in its loader in a direct start |
 | licenses | Madeira on iPhone, Windows license, Wine desktop | launched; the desktop start is automatic and the Mac license still starts directly |
 | 6 | probe with `--game-version 2012.01.01.0000.0000 --save-reply` (2026-10-31) | an outdated game gets `200`, a patch list and an `X-Patch-Unique-Id`; the sign-in now stops with "update needed" for such a reply |
+| 1–7 | Madeira on iPhone with that change, both licenses (2026-10-31) | a current game gets `204` with the session ID; signed in and launched with the Mac and the Windows license |
