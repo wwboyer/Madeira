@@ -395,7 +395,9 @@ struct FFXIVPatchRunner {
     /// Room for the rest of the download plus the repository's growth.
     private func checkSpace(for patch: SquareEnixPatch, have: Int64, current: Int64) throws {
         let needed = (patch.size - have) + max(0, patch.installedSize - current) + reserve
-        let values = try install.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        // A fresh URL each time: resource values are cached on a URL, so the stored
+        // `install` would keep reporting the space from the start of the run.
+        let values = try URL(fileURLWithPath: install.path).resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
         let available = values.volumeAvailableCapacityForImportantUsage ?? 0
         if available < needed { throw FFXIVPatchError.notEnoughSpace(needed: needed, available: available) }
     }
@@ -406,6 +408,8 @@ struct FFXIVPatchRunner {
         var folders: [URL] = []
         var loose: [URL] = []
         switch repository {
+        // The boot folder may also hold files no patch makes (the official app's 390 MB
+        // shader cache); they only make this larger, which the space check absorbs.
         case "boot": folders = [install.appendingPathComponent("boot")]
         default:
             let folder = repository == "ffxiv" ? "ffxiv" : repository

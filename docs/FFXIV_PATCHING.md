@@ -322,9 +322,12 @@ Nothing here is built yet.
   in 64 MiB range requests (the unit of resuming), the size and per-block
   SHA-1 checks, applying, deleting, the `.ver`/`.bck` files, and a journal
   of applied patches (`.madeira-patches/applied.txt` in the install folder)
-  so an interrupted run continues. A run interrupted inside a history
-  patch's first part can't resume, because that part's `R` needs an empty
-  repository; the folder has to be cleared first.
+  so an interrupted run continues (tested by killing a run mid-download).
+  A run interrupted while applying a history patch's first part can't
+  resume, because that part's `R` needs an empty repository; the folder has
+  to be cleared first. `ZiPatchApplier.maxChunk` (256 MiB) is a sanity
+  limit, not a measured one: only ex1's chunks and one base-game patch have
+  been through it, and the base game's 34 history parts are untested.
 - **Downloads:** the background-download helper Steam and Epic share, paused
   during a game session; an App Transport Security exception for
   `patch-dl.ffxiv.com`.
@@ -403,3 +406,6 @@ code is copied.
 | List fields 2 and 3 | compared with the installed game at the newest versions | installed bytes and file count of each repository (sqpack + movie, without `.ver`/`.bck`), exact for all six |
 | Whole chain | `zipatch-inspect.py chain` of all 13 ex1 patches from nothing (2026-10-31), every block's SHA-1 checked | after fixing the `D` header count: `sqpack/ex1` (with `.ver`/`.bck`) and `movie/ex1` byte-identical to the installed copy; 9.2 GB in about 3 minutes |
 | Swift applier and runner | `FFXIVPatcher.swift` in a Mac test driver (2026-10-31): fresh ex1 (13 patches, `-Onone`) and an update from the `2026.04.10.0000.0001` snapshot (3 patches) | both byte-identical to the installed ex1; fresh in 211 s with downloads; a corrupted chunk, a wrong hash and escaping paths are refused |
+| Boot bootstrap | the runner on the boot list for `2012.01.01.0000.0000` (`D2013.06.18.0000.0000`, then `D2026.08.18.0000.0001`) into an empty install (2026-10-31) | all 18 files written, `ffxivboot.ver`/`.bck` included, identical to the official app's boot folder (whose shader cache is a link, not a patch file) |
+| Resume | the runner killed 45 s into a fresh ex1 run (part `a` applied, part `b` 738 MB downloaded), then run again | it skipped `a`, continued `b` from its byte offset, and ended byte-identical; a stray file in an empty ex1 made `R` stop the run with nothing changed |
+| Free-space check | 2 GiB written while reading the volume's free space through one URL and through fresh ones | the reused URL kept reporting the old figure (cached resource values), so the runner reads through a fresh URL each time |
