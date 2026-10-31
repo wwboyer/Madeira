@@ -27,7 +27,8 @@ steps 2 and 6 return the patch lists. Mark anything unconfirmed as
   one tab-separated line: size in bytes, three unknown fields, the target
   version, and the download URL. One patch can span many versions: a 2015
   boot version got a single patch straight to the current version.
-- **Game:** when the game is outdated, step 6 replies `200` with a
+- **Game:** a current game gets `204` with the session ID (iPhone,
+  2026-10-31). When the game is outdated, step 6 replies `200` with a
   `multipart/mixed` list, **and with an `X-Patch-Unique-Id`**, so the header
   alone does not mean the game may start. See "Game patch lists" below.
 
@@ -285,8 +286,6 @@ bytes that were there, which a wrong offset, path or field would not.
 ## Open questions
 
 - Field 4 of a game patch list line.
-- What step 6 replies for a current game (the status code); the patch-list
-  case is the one recorded.
 - Whether the official launcher reports `2012.01.01.0000.0000` for missing
   expansions in its first registration, or registers again after the base
   game. Both give a usable list.
