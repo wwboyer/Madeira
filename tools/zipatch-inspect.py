@@ -166,7 +166,8 @@ def dat_command(command, body):
         return sqpack_path(body, 3, 'D'), offset * BLOCK, fill + bytes(delete * BLOCK)
     if command in 'DE':
         offset, count = struct.unpack_from('>II', body, 0x0B)
-        empty = struct.pack('<IIIII', BLOCK, 0, 0, count, 0).ljust(count * BLOCK, b'\0')
+        # The empty-block header holds count - 1 (confirmed for D against ex1, 2026-10-31).
+        empty = struct.pack('<IIIII', BLOCK, 0, 0, count - 1, 0).ljust(count * BLOCK, b'\0')
         return sqpack_path(body, 3, 'D'), offset * BLOCK, empty
     file_kind, header_kind = chr(body[0]), chr(body[1])
     if file_kind not in 'DI' or header_kind not in 'VDI':
@@ -214,7 +215,18 @@ def apply_patch(path, game):
                     os.rmdir(folder)
             elif name == 'SQPK':
                 command, body = chr(payload[4]), payload[5:]
-                if command == 'F':
+                if command == 'F' and chr(body[0]) == 'R':
+                    # First in a history patch, with an empty path and the expansion ID.
+                    # What it removes is unconfirmed, so it is only accepted where it
+                    # can't matter: a repository with no files yet.
+                    expansion, = struct.unpack_from('>H', body, 0x17)
+                    folder = 'ffxiv' if expansion == 0 else f'ex{expansion}'
+                    present = [os.path.join(top, name) for part in ('sqpack', 'movie')
+                               for top, _, names in os.walk(os.path.join(game, part, folder)) for name in names]
+                    if present:
+                        raise SystemExit(f'F R (reset?) for {folder}, which has {len(present)} files; unconfirmed, not applied')
+                    command += 'R'
+                elif command == 'F':
                     operation, offset, fpath, _, blocks = file_op(body)
                     target = os.path.join(game, *fpath.replace('\\', '/').split('/'))
                     if operation == 'A':
@@ -229,7 +241,9 @@ def apply_patch(path, game):
                     else:
                         raise SystemExit(f'unknown file operation {operation!r} for {fpath}')
                     command += operation
-                elif command in 'ADEH':
+                elif command == 'E':
+                    raise SystemExit('SQPK E (expand) is not confirmed yet; not applied')
+                elif command in 'ADH':
                     fpath, offset, fill = dat_command(command, body)
                     write_at(os.path.join(game, 'sqpack', *fpath.split('/')), offset, fill, extend=command != 'D')
                 elif command not in 'XTI':
@@ -305,8 +319,9 @@ def chain(reply, repository, game, stop_after=None, work=None):
         os.remove(patch)
         if VERSION.fullmatch(entry['version']):
             os.makedirs(os.path.dirname(ver), exist_ok=True)
-            with open(ver, 'w') as f:
-                f.write(entry['version'])
+            for name in (ver, ver[:-4] + '.bck'):   # the .bck file holds the same version
+                with open(name, 'w') as f:
+                    f.write(entry['version'])
         sqpk = {k: v for k, v in counts.items() if len(k) <= 2}
         print(f'  #{number} {entry["url"].rsplit("/", 1)[1]} ({entry["size"]:,} bytes): downloaded in '
               f'{got - began:.0f} s, applied in {time.time() - got:.0f} s; {sqpk}', flush=True)

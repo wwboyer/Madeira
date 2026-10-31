@@ -18,7 +18,9 @@ steps 2 and 6 return the patch lists. Mark anything unconfirmed as
 | ZiPatch container, FHDR, APLY | confirmed |
 | SQPK F (file) operations | confirmed: a boot patch rebuilt the installed boot files exactly |
 | SQPK A and H (dat and index files) | confirmed: reapplying ex1's newest patch to its patched dats changed nothing |
-| SQPK D and E | from xiv.dev only; not seen in a patch yet |
+| SQPK D | confirmed, with a correction to xiv.dev: the empty-block header holds count − 1 |
+| SQPK E | not seen in a patch yet; the applier refuses it |
+| Whole chain (history patches to current) | confirmed: ex1 rebuilt from nothing is byte-identical to an installed copy |
 | Fresh install | confirmed: 204 patches, 152.15 GB to download, 130.30 GB installed |
 
 ## Patch lists
@@ -87,6 +89,8 @@ matched exactly. Field 2 is what a disk-space check needs.
   letter suffix (`a` to `z`, then `aa`, `ab`, …). Split `D` patches step the
   third version group instead (`2024.10.25.0000.0000`, `.0001.0000`, …), and
   each part's field 5 is its own name.
+- **Version files:** each repository also has a `.bck` file beside its
+  `.ver` (`ffxivgame.bck`, `exN.bck`), holding the same version.
 - **Disk:** applying each patch and deleting it before the next needs at
   least the installed size plus 1.5 GB (an estimate: it assumes no patch
   grows the files beyond their final size along the way).
@@ -232,6 +236,12 @@ the blocks. Observed operations:
 
 - `A` writes the blocks at the offset. Large files come in several
   chunks at increasing offsets.
+- `R`, not in xiv.dev: the first command of each ex1 history part's first
+  file, with an empty path and the repository's expansion ID (1). It
+  presumably resets the repository before the rebuild, but what it removes
+  is unconfirmed, so the applier accepts it only while the repository has no
+  files in `sqpack/` and `movie/` (always true in a fresh install) and stops
+  otherwise.
 - `D` deletes the file. The boot patch deletes the 32-bit
   `ffxivlauncher.exe`, `ffxivupdater.exe` and `ffxivconfig.exe`, which is
   why only four boot-hash files remain.
@@ -257,10 +267,14 @@ counts are in 128-byte blocks.
   index), the header kind (`V` version, `D` data, `I` index) and a pad byte.
   1,024 bytes follow the target. A `V` header is written at offset 0, the
   others at 1,024. The `V` payload starts with `SqPack`.
-- **`D`** (delete) and **`E`** (expand), from xiv.dev and not seen yet:
-  block offset and block count. Both write count × 128 zero bytes at the
-  offset, the first 20 of them an empty-block header (little-endian: 128, 0,
-  0, the count, 0). `D` fails past the end of the file; `E` may extend it.
+- **`D`** (delete): block offset and block count (4 bytes each). It writes
+  count × 128 zero bytes at the offset, the first 20 of them an empty-block
+  header, little-endian: 128, 0, 0, **count − 1**, 0. xiv.dev gives the count
+  itself; the ex1 rebuild showed count − 1 in all 1,306 such blocks it
+  compared. It must not write past the end of the file.
+- **`E`** (expand), from xiv.dev only: the same fields as `D`, allowed to
+  extend the file. Not seen in any patch so far, and since xiv.dev's `D`
+  header was wrong, the applier refuses `E` until one is seen.
 
 The ex1 patch `D2026.08.20.0000.0000` has two `A` commands (one into each of
 `030100.win32.dat0` and `dat1`) and four `H` (version and data header of
@@ -374,3 +388,4 @@ code is copied.
 | SQPK A and H | `zipatch-inspect.py apply-sqpk` of ex1 `D2026.08.20.0000.0000` on APFS clones of ex1 at that version | 2 `A` and 4 `H` wrote identical bytes; both dats still byte-identical to the install |
 | Game patch lists | `sqex-signin-probe.py --game-version 2012.01.01.0000.0000 --save-reply`, once with no expansions and once with ex1–5 at `2012.01.01.0000.0000` (2026-10-31) | 108 base-game patches; 204 across all six repositories; `X-Patch-Unique-Id` present; hash counts = ceil(size / 50,000,000) for every line |
 | List fields 2 and 3 | compared with the installed game at the newest versions | installed bytes and file count of each repository (sqpack + movie, without `.ver`/`.bck`), exact for all six |
+| Whole chain | `zipatch-inspect.py chain` of all 13 ex1 patches from nothing (2026-10-31), every block's SHA-1 checked | after fixing the `D` header count: `sqpack/ex1` (with `.ver`/`.bck`) and `movie/ex1` byte-identical to the installed copy; 9.2 GB in about 3 minutes |
