@@ -11,6 +11,14 @@
       Apply the SQPK A, D, E and H (dat and index) commands to the files
       in <game-dir>/sqpack, in place, and report which commands changed
       data. Run it on copies (APFS clones: cp -c), never the real game.
+  apply <file.patch> <game-dir>
+      Apply every chunk in file order (F, A, D, E, H, ADIR, DELD); anything
+      not described in docs/FFXIV_PATCHING.md stops the run.
+  chain <saved-reply> <base|exN> <game-dir> [<stop-after-version>]
+      For one repository of a reply saved by sqex-signin-probe.py
+      --save-reply: download each patch (resuming), check its size and every
+      block's SHA-1, apply it, delete it and write the version file. A run
+      starts after the version already in the version file.
 
 A research tool for checking the format against real files, not Madeira's
 patcher. Big-endian unless noted.
@@ -18,6 +26,7 @@ patcher. Big-endian unless noted.
 import collections
 import hashlib
 import os
+import re
 import struct
 import sys
 import zlib
@@ -149,23 +158,163 @@ def sqpack_path(body, offset, kind):
     return f'{folder}/{main:02x}{sub:04x}.win32.{suffix}'
 
 
+def dat_command(command, body):
+    """(path, offset, bytes to write) of an SQPK A, D, E or H command."""
+    if command == 'A':
+        offset, count, delete = struct.unpack_from('>III', body, 0x0B)
+        fill = bytes(body[0x17:0x17 + count * BLOCK])
+        return sqpack_path(body, 3, 'D'), offset * BLOCK, fill + bytes(delete * BLOCK)
+    if command in 'DE':
+        offset, count = struct.unpack_from('>II', body, 0x0B)
+        empty = struct.pack('<IIIII', BLOCK, 0, 0, count, 0).ljust(count * BLOCK, b'\0')
+        return sqpack_path(body, 3, 'D'), offset * BLOCK, empty
+    file_kind, header_kind = chr(body[0]), chr(body[1])
+    if file_kind not in 'DI' or header_kind not in 'VDI':
+        raise SystemExit(f'H with unknown kinds {file_kind!r} {header_kind!r}')
+    return sqpack_path(body, 3, file_kind), 0 if header_kind == 'V' else 1024, bytes(body[11:11 + 1024])
+
+
 def dat_commands(data):
     """(command, path, offset, bytes to write) for each SQPK A, D, E and H command, in order."""
     for name, payload, _ in chunks(data):
-        if name != 'SQPK':
+        if name == 'SQPK' and chr(payload[4]) in 'ADEH':
+            yield (chr(payload[4]),) + dat_command(chr(payload[4]), payload[5:])
+
+
+def write_at(target, offset, fill, extend=True):
+    """Write fill at offset, creating the file (and its folders) when it doesn't exist."""
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    exists = os.path.exists(target)
+    if not extend and (not exists or offset + len(fill) > os.path.getsize(target)):
+        raise SystemExit(f'write past the end of {target}')
+    with open(target, 'r+b' if exists else 'w+b') as f:
+        f.seek(offset)
+        f.write(fill)
+
+
+def apply_patch(path, game):
+    """Apply every chunk of a patch to <game>, in file order. Anything this
+    document hasn't confirmed or described stops the run rather than being guessed."""
+    import mmap
+    counts = collections.Counter()
+    with open(path, 'rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as data:
+        for name, payload, crc_ok in chunks(data):
+            if name is None or name == 'EOF_':
+                break
+            if not crc_ok:
+                raise SystemExit(f'{path}: CRC32 mismatch in a {name} chunk')
+            if name in ('FHDR', 'APLY'):
+                pass
+            elif name in ('ADIR', 'DELD'):
+                length, = struct.unpack_from('>I', payload, 0)
+                folder = os.path.join(game, *bytes(payload[4:4 + length]).split(b'\0')[0].decode().replace('\\', '/').split('/'))
+                if name == 'ADIR':
+                    os.makedirs(folder, exist_ok=True)
+                elif os.path.isdir(folder) and not os.listdir(folder):
+                    os.rmdir(folder)
+            elif name == 'SQPK':
+                command, body = chr(payload[4]), payload[5:]
+                if command == 'F':
+                    operation, offset, fpath, _, blocks = file_op(body)
+                    target = os.path.join(game, *fpath.replace('\\', '/').split('/'))
+                    if operation == 'A':
+                        os.makedirs(os.path.dirname(target), exist_ok=True)
+                        with open(target, 'r+b' if offset and os.path.exists(target) else 'wb') as out:
+                            out.seek(offset)
+                            for block in file_blocks(bytes(blocks)):
+                                out.write(block)
+                    elif operation == 'D':
+                        if os.path.exists(target):
+                            os.remove(target)
+                    else:
+                        raise SystemExit(f'unknown file operation {operation!r} for {fpath}')
+                    command += operation
+                elif command in 'ADEH':
+                    fpath, offset, fill = dat_command(command, body)
+                    write_at(os.path.join(game, 'sqpack', *fpath.split('/')), offset, fill, extend=command != 'D')
+                elif command not in 'XTI':
+                    raise SystemExit(f'unknown SQPK command {command!r}')
+                counts[command] += 1
+            else:
+                raise SystemExit(f'unknown chunk {name!r}')
+            counts[name] += 1
+    return counts
+
+
+VERSION = re.compile(r'\d{4}\.\d{2}\.\d{2}\.\d{4}\.\d{4}')
+
+
+def patch_list(reply, repository):
+    """The lines of a saved session-registration reply for one repository ('base' or 'exN')."""
+    lines = []
+    for line in open(reply, encoding='utf-8'):
+        fields = line.rstrip('\r\n').split('\t')
+        if len(fields) != 9:
             continue
-        command, body = chr(payload[4]), payload[5:]
-        if command == 'A':
-            offset, count, delete = struct.unpack_from('>III', body, 0x0B)
-            fill = body[0x17:0x17 + count * BLOCK]
-            yield 'A', sqpack_path(body, 3, 'D'), offset * BLOCK, fill + bytes(delete * BLOCK)
-        elif command in 'DE':
-            offset, count = struct.unpack_from('>II', body, 0x0B)
-            empty = struct.pack('<IIIII', BLOCK, 0, 0, count, 0).ljust(count * BLOCK, b'\0')
-            yield command, sqpack_path(body, 3, 'D'), offset * BLOCK, empty
-        elif command == 'H':
-            file_kind, header_kind = chr(body[0]), chr(body[1])
-            yield 'H', sqpack_path(body, 3, file_kind), 0 if header_kind == 'V' else 1024, body[11:11 + 1024]
+        match = re.search(r'/game/(?:(ex\d+)/)?[0-9a-f]{8}/', fields[8])
+        if match and (match.group(1) or 'base') == repository:
+            lines.append(dict(size=int(fields[0]), version=fields[4], block=int(fields[6]),
+                              hashes=fields[7].split(','), url=fields[8]))
+    return lines
+
+
+def download(entry, work):
+    """Download one patch (resuming a partial file) and check its size and block hashes."""
+    import urllib.request
+    target = os.path.join(work, entry['url'].rsplit('/', 1)[1])
+    have = os.path.getsize(target) if os.path.exists(target) else 0
+    if have < entry['size']:
+        request = urllib.request.Request(entry['url'], headers={'Range': f'bytes={have}-'} if have else {})
+        with urllib.request.urlopen(request, timeout=60) as reply, open(target, 'ab' if have else 'wb') as out:
+            if have and reply.status != 206:
+                raise SystemExit(f'{entry["url"]}: no range support (HTTP {reply.status})')
+            while chunk := reply.read(1 << 20):
+                out.write(chunk)
+    if os.path.getsize(target) != entry['size']:
+        raise SystemExit(f'{target}: {os.path.getsize(target)} bytes, the list says {entry["size"]}')
+    with open(target, 'rb') as f:
+        for index, expected in enumerate(entry['hashes']):
+            if hashlib.sha1(f.read(entry['block'])).hexdigest() != expected:
+                os.remove(target)
+                raise SystemExit(f'{target}: block {index} SHA-1 mismatch (file removed)')
+        if f.read(1):
+            raise SystemExit(f'{target}: longer than its {len(entry["hashes"])} blocks')
+    return target
+
+
+def chain(reply, repository, game, stop_after=None, work=None):
+    """Download, check, apply and delete one repository's patches in list order,
+    writing its version file after each patch that names a version."""
+    import time
+    ver = (os.path.join(game, 'ffxivgame.ver') if repository == 'base'
+           else os.path.join(game, 'sqpack', repository, f'{repository}.ver'))
+    entries = patch_list(reply, repository)
+    if not entries:
+        raise SystemExit(f'no {repository} patches in {reply}')
+    current = open(ver).read().strip() if os.path.exists(ver) else None
+    versions = [e['version'] for e in entries]
+    start = versions.index(current) + 1 if current in versions else 0
+    work = work or os.path.join(game, '.patches')
+    os.makedirs(work, exist_ok=True)
+    print(f'{repository}: {len(entries)} patches, at {current or "nothing"}, starting with #{start + 1}', flush=True)
+    for number, entry in enumerate(entries[start:], start + 1):
+        began = time.time()
+        patch = download(entry, work)
+        got = time.time()
+        counts = apply_patch(patch, game)
+        os.remove(patch)
+        if VERSION.fullmatch(entry['version']):
+            os.makedirs(os.path.dirname(ver), exist_ok=True)
+            with open(ver, 'w') as f:
+                f.write(entry['version'])
+        sqpk = {k: v for k, v in counts.items() if len(k) <= 2}
+        print(f'  #{number} {entry["url"].rsplit("/", 1)[1]} ({entry["size"]:,} bytes): downloaded in '
+              f'{got - began:.0f} s, applied in {time.time() - got:.0f} s; {sqpk}', flush=True)
+        if stop_after and entry['version'] == stop_after:
+            print(f'stopped after {stop_after}')
+            return
+    print(f'{repository} now at {open(ver).read().strip()}')
+
 
 
 def apply_sqpk(path, game):
@@ -191,7 +340,6 @@ def apply_sqpk(path, game):
             print(f'  {command} {fpath} at {offset}: {len(fill)} bytes, unchanged')
     print(f'applied {dict(counts)}; commands that changed data: {sum(changed.values())}')
 
-
 if __name__ == '__main__':
     if len(sys.argv) >= 3 and sys.argv[1] == 'survey':
         survey(sys.argv[2])
@@ -199,5 +347,9 @@ if __name__ == '__main__':
         apply_files(*sys.argv[2:5])
     elif len(sys.argv) == 4 and sys.argv[1] == 'apply-sqpk':
         apply_sqpk(*sys.argv[2:4])
+    elif len(sys.argv) == 4 and sys.argv[1] == 'apply':
+        print(dict(apply_patch(*sys.argv[2:4])))
+    elif len(sys.argv) in (5, 6) and sys.argv[1] == 'chain':
+        chain(*sys.argv[2:6])
     else:
         raise SystemExit(__doc__)
