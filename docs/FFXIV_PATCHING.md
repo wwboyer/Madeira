@@ -314,8 +314,17 @@ Nothing here is built yet.
      (resuming with ranges), check each 50,000,000-byte block's SHA-1, apply,
      delete, and write the version file when field 5 is a version.
   An update is steps 3 and 4 on an existing install.
-- **Applier:** new Swift code from this document. It refuses any command
-  not confirmed here rather than guess.
+- **Applier:** `app/Madeira/FFXIVPatcher.swift` (done 2026-10-31), new
+  Swift code from this document. `ZiPatchApplier` streams a patch chunk by
+  chunk, checks every chunk's CRC32, keeps paths inside the folder, and
+  refuses any command not confirmed here (`E` included). `FFXIVPatchRunner`
+  runs a `[SquareEnixPatch]`: a free-space check against field 2, a download
+  in 64 MiB range requests (the unit of resuming), the size and per-block
+  SHA-1 checks, applying, deleting, the `.ver`/`.bck` files, and a journal
+  of applied patches (`.madeira-patches/applied.txt` in the install folder)
+  so an interrupted run continues. A run interrupted inside a history
+  patch's first part can't resume, because that part's `R` needs an empty
+  repository; the folder has to be cleared first.
 - **Downloads:** the background-download helper Steam and Epic share, paused
   during a game session; an App Transport Security exception for
   `patch-dl.ffxiv.com`.
@@ -393,3 +402,4 @@ code is copied.
 | Game patch lists | `sqex-signin-probe.py --game-version 2012.01.01.0000.0000 --save-reply`, once with no expansions and once with ex1–5 at `2012.01.01.0000.0000` (2026-10-31) | 108 base-game patches; 204 across all six repositories; `X-Patch-Unique-Id` present; hash counts = ceil(size / 50,000,000) for every line |
 | List fields 2 and 3 | compared with the installed game at the newest versions | installed bytes and file count of each repository (sqpack + movie, without `.ver`/`.bck`), exact for all six |
 | Whole chain | `zipatch-inspect.py chain` of all 13 ex1 patches from nothing (2026-10-31), every block's SHA-1 checked | after fixing the `D` header count: `sqpack/ex1` (with `.ver`/`.bck`) and `movie/ex1` byte-identical to the installed copy; 9.2 GB in about 3 minutes |
+| Swift applier and runner | `FFXIVPatcher.swift` in a Mac test driver (2026-10-31): fresh ex1 (13 patches, `-Onone`) and an update from the `2026.04.10.0000.0001` snapshot (3 patches) | both byte-identical to the installed ex1; fresh in 211 s with downloads; a corrupted chunk, a wrong hash and escaping paths are refused |

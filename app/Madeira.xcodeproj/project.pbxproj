@@ -224,6 +224,7 @@
 		A1000F01 /* GestureZones.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000F01 /* GestureZones.swift */; };
 		A1001001 /* SquareEnixSignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2001001 /* SquareEnixSignIn.swift */; };
 		A1001002 /* SquareEnixSignInView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2001002 /* SquareEnixSignInView.swift */; };
+		A1001003 /* FFXIVPatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2001003 /* FFXIVPatcher.swift */; };
 		A1000246 /* TouchControlPresets.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000246 /* TouchControlPresets.swift */; };
 		1686FBF2209ABE0E71A12807 /* MadeiraMemoryHost.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = D80FB04E72418784BED70CF4 /* MadeiraMemoryHost.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		5271C4AE571BDF56B9E51EAA /* DonorPool.m in Sources */ = {isa = PBXBuildFile; fileRef = 2027C80DC6F4BF37B7522656 /* DonorPool.m */; };
@@ -522,6 +523,7 @@
 		A2000F01 /* GestureZones.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GestureZones.swift; sourceTree = "<group>"; };
 		A2001001 /* SquareEnixSignIn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SquareEnixSignIn.swift; sourceTree = "<group>"; };
 		A2001002 /* SquareEnixSignInView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SquareEnixSignInView.swift; sourceTree = "<group>"; };
+		A2001003 /* FFXIVPatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FFXIVPatcher.swift; sourceTree = "<group>"; };
 		A2000246 /* TouchControlPresets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TouchControlPresets.swift; sourceTree = "<group>"; };
 		2027C80DC6F4BF37B7522656 /* DonorPool.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = DonorPool.m; sourceTree = "<group>"; };
 		32607841304656C675DB52CF /* MemoryHostTest.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = MemoryHostTest.h; sourceTree = "<group>"; };
@@ -717,6 +719,7 @@
 				A2000F01 /* GestureZones.swift */,
 				A2001001 /* SquareEnixSignIn.swift */,
 				A2001002 /* SquareEnixSignInView.swift */,
+				A2001003 /* FFXIVPatcher.swift */,
 				A2000246 /* TouchControlPresets.swift */,
 				A2000244 /* Winios/WiniosGamepad.c */,
 				A2000203 /* HardwareInput.swift */,
@@ -1184,6 +1187,7 @@
 				A1000F01 /* GestureZones.swift in Sources */,
 				A1001001 /* SquareEnixSignIn.swift in Sources */,
 				A1001002 /* SquareEnixSignInView.swift in Sources */,
+				A1001003 /* FFXIVPatcher.swift in Sources */,
 				A1000246 /* TouchControlPresets.swift in Sources */,
 				A1000244 /* Winios/WiniosGamepad.c in Sources */,
 				A1000203 /* HardwareInput.swift in Sources */,
