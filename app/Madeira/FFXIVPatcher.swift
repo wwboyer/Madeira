@@ -69,7 +69,10 @@ struct ZiPatchApplier {
         var files = OpenFiles(gap: gapFill)
         defer { files.closeAll() }
         var counts: [String: Int] = [:]
-        while true {
+        // Each chunk in its own autorelease pool: FileHandle's reads hand back autoreleased
+        // buffers, and a run that never suspends (download-ahead) would otherwise keep a
+        // whole patch's worth of them alive until it does.
+        while try autoreleasepool(invoking: { () throws -> Bool in
             guard let head = try input.read(upToCount: 8), head.count == 8 else {
                 throw FFXIVPatchError.damaged("\(name) ends before its EOF_ chunk")
             }
@@ -88,7 +91,7 @@ struct ZiPatchApplier {
             switch kind {
             case "EOF_":
                 try files.finish()   // the buffered writes, then the files' contents to the drive
-                return counts
+                return false
             case "FHDR", "APLY": break
             case "ADIR", "DELD":
                 let length = Int(payload.be32(0))
@@ -107,7 +110,9 @@ struct ZiPatchApplier {
             default:
                 throw FFXIVPatchError.unsupported("a \(kind) chunk in \(name)")
             }
-        }
+            return true
+        }) {}
+        return counts
     }
 
     private func sqpk(_ command: Character, _ body: Data, files: inout OpenFiles) throws -> String {
@@ -567,7 +572,7 @@ struct FFXIVPatchRunner {
             }
             let received = Date()
             timing.network += received.timeIntervalSince(asked)
-            try output.write(contentsOf: data)
+            try autoreleasepool { try output.write(contentsOf: data) }
             timing.downloadWrites += Date().timeIntervalSince(received)
             timing.downloaded += Int64(data.count)
             have += Int64(data.count)
@@ -589,9 +594,12 @@ struct FFXIVPatchRunner {
         for expected in patch.sha1 {
             var hasher = Insecure.SHA1()
             var left = patch.hashBlockSize
-            while left > 0, let chunk = try input.read(upToCount: min(left, 4 << 20)), !chunk.isEmpty {
+            while left > 0, let read = try autoreleasepool(invoking: { () throws -> Int? in
+                guard let chunk = try input.read(upToCount: min(left, 4 << 20)), !chunk.isEmpty else { return nil }
                 hasher.update(data: chunk)
-                left -= chunk.count
+                return chunk.count
+            }) {
+                left -= read
             }
             let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
             guard digest == expected.lowercased() else {

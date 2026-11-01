@@ -383,6 +383,13 @@ update has run on a device yet.
     otherwise it downloads to the install's work folder in turn. It writes
     every patch to the device's flash once more, hence the switch. A partial
     download in either folder is resumed.
+  - **Memory:** FileHandle's reads return autoreleased buffers, and the
+    runner's loops rarely suspend, so a run held on to everything it read: a
+    fresh ex1 run peaked at a 3.97 GB footprint on the Mac (3.69 GB without
+    download-ahead), and an iPhone run ended without a crash report, the way
+    iOS ends an app over its memory limit. Each chunk, SHA-1 read and
+    download write now has its own autorelease pool: 794 MB peak, same speed,
+    still byte-identical.
 - **Applier:** `app/Madeira/FFXIVPatcher.swift` (done 2026-10-31), new
   Swift code from this document. `ZiPatchApplier` streams a patch chunk by
   chunk, checks every chunk's CRC32, keeps paths inside the folder, and
