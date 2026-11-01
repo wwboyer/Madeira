@@ -1106,7 +1106,7 @@ try:
     (work / 'downloader.swift').write_text(downloader_host)
     production = [steam / 'Proto/SteamProtoMessages.swift', steam / 'Core/SteamError.swift', steam / 'Core/SteamProtocol.swift',
                   steam / 'Core/SteamMessageCodec.swift', steam / 'Core/SteamCMSession.swift',
-                  steam / 'Content/ContentDecryptor.swift', steam / 'Content/DepotManifest.swift',
+                  steam / 'Content/ContentDecryptor.swift', steam / 'Content/DepotManifest.swift', steam / 'Content/SteamLANPeer.swift',
                   steam / 'Library/SteamAppInfo.swift', steam / 'Library/SteamLibraryFetcher.swift',
                   steam / 'Install/AppManifestWriter.swift', app / 'SteamInstall.swift', app / 'SteamKeyValues.swift', app / 'ExternalStorage.swift']
     exe = work / 'check'
