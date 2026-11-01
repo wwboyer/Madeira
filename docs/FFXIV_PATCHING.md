@@ -390,6 +390,12 @@ update has run on a device yet.
     iOS ends an app over its memory limit. Each chunk, SHA-1 read and
     download write now has its own autorelease pool: 794 MB peak, same speed,
     still byte-identical.
+  - **A bad download is fetched again once:** a patch that fails its size or
+    SHA-1 check is deleted and downloaded again from the start, and only a
+    second failure stops the run. On the iPhone, a patch whose
+    download-ahead had been cut off when the app was stopped failed its
+    check when resumed (2026-10-31); a corrupted leftover in the Mac tests
+    is now caught, fetched again and applied, ending byte-identical.
 - **Applier:** `app/Madeira/FFXIVPatcher.swift` (done 2026-10-31), new
   Swift code from this document. `ZiPatchApplier` streams a patch chunk by
   chunk, checks every chunk's CRC32, keeps paths inside the folder, and

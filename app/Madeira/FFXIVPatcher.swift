@@ -420,7 +420,7 @@ struct FFXIVPatchRunner {
             try Task.checkCancellation()
             let index = offset + 1, name = patch.url.lastPathComponent
             if sizes[patch.repository] == nil { sizes[patch.repository] = repositoryBytes(patch.repository) }
-            let file: URL
+            var file: URL
             var timing: Timing
             if let early = ahead, early.offset == offset {
                 ahead = nil
@@ -428,7 +428,7 @@ struct FFXIVPatchRunner {
                 timing = try await withTaskCancellationHandler { try await early.task.value } onCancel: { early.task.cancel() }
             } else {
                 file = place(for: patch)
-                try checkDownloadRoom(for: patch, at: file, growth: file.path.hasPrefix(install.path)
+                try checkDownloadRoom(for: patch, at: file, growth: inWork(file)
                                       ? max(0, patch.installedSize - (sizes[patch.repository] ?? 0)) : 0)
                 timing = try await download(patch, to: file, index: index, count: patches.count)
             }
@@ -436,7 +436,7 @@ struct FFXIVPatchRunner {
             if downloadAhead, staging != nil, step + 1 < todo.count {
                 let (nextOffset, next) = todo[step + 1]
                 let nextFile = place(for: next)
-                if nextFile.path.hasPrefix(install.path) {
+                if inWork(nextFile) {
                     progress(.note("download-ahead: no room on this device for \(next.url.lastPathComponent), so it downloads in turn"))
                 } else {
                     let runner = self
@@ -446,7 +446,23 @@ struct FFXIVPatchRunner {
             }
             progress(.checking(index: index, count: patches.count, name: name))
             var clock = Date()
-            try verify(patch, file: file)
+            do {
+                try verify(patch, file: file)
+            } catch FFXIVPatchError.hashMismatch {
+                // verify deleted it. Once, download it again from the start: a download cut
+                // off by the app being stopped has failed this way when resumed (2026-10-31).
+                progress(.note("\(name) didn't match its checksum; downloading it again"))
+                file = place(for: patch)
+                try checkDownloadRoom(for: patch, at: file, growth: inWork(file)
+                                      ? max(0, patch.installedSize - (sizes[patch.repository] ?? 0)) : 0)
+                let again = try await download(patch, to: file, index: index, count: patches.count)
+                timing.downloaded += again.downloaded
+                timing.network += again.network
+                timing.downloadWrites += again.downloadWrites
+                progress(.checking(index: index, count: patches.count, name: name))
+                clock = Date()
+                try verify(patch, file: file)
+            }
             timing.check = Date().timeIntervalSince(clock)
             try checkGrowth(for: patch, current: sizes[patch.repository] ?? 0)
             if gap == nil, let probe = Self.timeRandomReads(under: install.appendingPathComponent("game/sqpack")) {
@@ -485,6 +501,11 @@ struct FFXIVPatchRunner {
         // Every patch is in: the journal has done its job, and nothing is left to download.
         try? FileManager.default.removeItem(at: work)
         if let staging { try? FileManager.default.removeItem(at: staging) }
+    }
+
+    /// Whether a download is in the install's work folder (not this device's staging folder).
+    private func inWork(_ file: URL) -> Bool {
+        file.deletingLastPathComponent().standardizedFileURL.path == work.standardizedFileURL.path
     }
 
     /// Where a patch downloads: a partial download already there, wherever it is; with
@@ -587,7 +608,10 @@ struct FFXIVPatchRunner {
     /// The size, then the SHA-1 of every block; a mismatch deletes the file.
     private func verify(_ patch: SquareEnixPatch, file: URL) throws {
         let name = patch.url.lastPathComponent
-        guard fileSize(file) == patch.size else { throw FFXIVPatchError.download("\(name) isn't its listed size") }
+        guard fileSize(file) == patch.size else {
+            try? FileManager.default.removeItem(at: file)   // wrong content either way: downloaded again
+            throw FFXIVPatchError.hashMismatch(name)
+        }
         guard !patch.sha1.isEmpty else { return }   // boot lists carry no hashes
         let input = try FileHandle(forReadingFrom: file)
         defer { try? input.close() }
