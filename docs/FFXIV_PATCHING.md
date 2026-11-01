@@ -351,6 +351,14 @@ update has run on a device yet.
   in that run, the time spent waiting on the network and writing them to
   the drive, the read-back for the SHA-1 check, and applying, each with its
   rate, to tell a slow drive from a slow network.
+- **Speed:** on an iPhone installing to an external APFS drive, applying
+  was the bottleneck at 5 to 21 MB/s, against 26 to 67 MB/s for the network
+  and 68 to 109 MB/s for writing a download (2026-10-31). Applying is many
+  small writes: base game `D2025.09.09.0000.0001` makes 13,693 (median
+  16,000 bytes) for 898 MB. The applier therefore buffers a write and joins
+  the next one to it when it starts exactly where the buffer ends (up to
+  8 MiB), writing it out before anything else; that patch then needs 2,115
+  writes. Bytes and order are unchanged (ex1 still rebuilds byte for byte).
 - **Applier:** `app/Madeira/FFXIVPatcher.swift` (done 2026-10-31), new
   Swift code from this document. `ZiPatchApplier` streams a patch chunk by
   chunk, checks every chunk's CRC32, keeps paths inside the folder, and
