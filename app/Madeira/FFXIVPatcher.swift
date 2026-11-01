@@ -335,8 +335,13 @@ struct FFXIVPatchRunner {
             try record(patch)
             if patch.setsVersion {
                 // An integrity check, not a stop: an existing install may hold files no patch made.
+                // Every part of a split patch carries the size after its last part (base game
+                // D2024.10.25.0000.0000 to .0003.0000), so only a set's last part is compared.
                 let measured = repositoryBytes(patch.repository)
-                progress(.measured(repository: patch.repository, bytes: measured, expected: patch.installedSize))
+                let next = patches.dropFirst(offset + 1).first { $0.repository == patch.repository }
+                if next?.installedSize != patch.installedSize {
+                    progress(.measured(repository: patch.repository, bytes: measured, expected: patch.installedSize))
+                }
                 sizes[patch.repository] = measured
             } else {
                 sizes[patch.repository] = patch.installedSize

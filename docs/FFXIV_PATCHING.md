@@ -339,7 +339,11 @@ update has run on a device yet.
 - **Size check:** after each patch that completes a version, the runner
   measures the repository as field 2 counts it and logs the two figures
   (`[ffxiv-patch] size check`). It doesn't stop the run, because an existing
-  install may hold files no patch made.
+  install may hold files no patch made. Each part of a split `D` patch
+  (`2024.10.25.0000.0000` to `.0003.0000`) carries the size after the set's
+  last part, so only that part is compared; on an iPhone install (external
+  APFS drive, 2026-10-31) every such comparison through `2025.07.18` matched
+  to the byte.
 - **Applier:** `app/Madeira/FFXIVPatcher.swift` (done 2026-10-31), new
   Swift code from this document. `ZiPatchApplier` streams a patch chunk by
   chunk, checks every chunk's CRC32, keeps paths inside the folder, and
