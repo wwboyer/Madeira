@@ -248,9 +248,15 @@ import SwiftUI
         case .applying(let index, let count, let name):
             job?.done = offsets[index]
             job?.detail = "Applying \(index) of \(count): \(name)"
-        case .applied(let index, _, let name, let version):
+        case .applied(let index, _, let name, let version, let timing):
             job?.done = offsets[index]
-            log("applied \(name)" + (version.map { ", now \($0)" } ?? ""))
+            let size = offsets[index] - offsets[index - 1]
+            let rate = { (bytes: Int64, seconds: Double) in seconds > 0 ? String(format: "%.1f MB/s", Double(bytes) / seconds / 1e6) : "-" }
+            log("applied \(name)" + (version.map { ", now \($0)" } ?? "") + String(
+                format: "; downloaded %lld bytes: network %.1f s (%@), drive writes %.1f s (%@); check %.1f s (%@); apply %.1f s (%@)",
+                timing.downloaded, timing.network, rate(timing.downloaded, timing.network),
+                timing.downloadWrites, rate(timing.downloaded, timing.downloadWrites),
+                timing.check, rate(size, timing.check), timing.apply, rate(size, timing.apply)))
         case .measured(let repository, let bytes, let expected):
             log("size check \(repository): \(bytes) bytes, the list says \(expected)" + (bytes == expected ? ", same" : ", DIFFERENT"))
         }

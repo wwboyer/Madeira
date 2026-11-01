@@ -341,9 +341,16 @@ update has run on a device yet.
   (`[ffxiv-patch] size check`). It doesn't stop the run, because an existing
   install may hold files no patch made. Each part of a split `D` patch
   (`2024.10.25.0000.0000` to `.0003.0000`) carries the size after the set's
-  last part, so only that part is compared; on an iPhone install (external
+  last part, so a patch is compared only when the next patch of its
+  repository reports a different size (a plain patch followed by one that
+  leaves the size unchanged is skipped too; the last of such a run is
+  checked); on an iPhone install (external
   APFS drive, 2026-10-31) every such comparison through `2025.07.18` matched
   to the byte.
+- **Timings:** each `[ffxiv-patch] applied` line gives the bytes downloaded
+  in that run, the time spent waiting on the network and writing them to
+  the drive, the read-back for the SHA-1 check, and applying, each with its
+  rate, to tell a slow drive from a slow network.
 - **Applier:** `app/Madeira/FFXIVPatcher.swift` (done 2026-10-31), new
   Swift code from this document. `ZiPatchApplier` streams a patch chunk by
   chunk, checks every chunk's CRC32, keeps paths inside the folder, and

@@ -290,11 +290,21 @@ private struct OpenFiles {
 /// applying, deleting, and the version files. A journal of applied patches lets an
 /// interrupted run continue where it stopped.
 struct FFXIVPatchRunner {
+    /// Where one patch's time went, for the log: the network and the drive's writes
+    /// while downloading, the read-back for the SHA-1 check, and applying.
+    struct Timing: Equatable {
+        var downloaded: Int64 = 0
+        var network: Double = 0
+        var downloadWrites: Double = 0
+        var check: Double = 0
+        var apply: Double = 0
+    }
+
     enum Event: Equatable {
         case downloading(index: Int, count: Int, name: String, received: Int64, total: Int64)
         case checking(index: Int, count: Int, name: String)
         case applying(index: Int, count: Int, name: String)
-        case applied(index: Int, count: Int, name: String, version: String?)
+        case applied(index: Int, count: Int, name: String, version: String?, timing: Timing)
         /// After a patch that completes a version: the repository's measured size and
         /// the list's figure for it (field 2), which should match.
         case measured(repository: String, bytes: Int64, expected: Int64)
@@ -319,11 +329,15 @@ struct FFXIVPatchRunner {
             if sizes[patch.repository] == nil { sizes[patch.repository] = repositoryBytes(patch.repository) }
             let file = work.appendingPathComponent("\(patch.repository)-\(name)")
             try checkSpace(for: patch, have: fileSize(file), current: sizes[patch.repository] ?? 0)
-            try await download(patch, to: file, index: index, count: patches.count)
+            var timing = try await download(patch, to: file, index: index, count: patches.count)
             progress(.checking(index: index, count: patches.count, name: name))
+            var clock = Date()
             try verify(patch, file: file)
+            timing.check = Date().timeIntervalSince(clock)
             progress(.applying(index: index, count: patches.count, name: name))
+            clock = Date()
             try ZiPatchApplier(root: root(patch.repository)).apply(file)
+            timing.apply = Date().timeIntervalSince(clock)
             try FileManager.default.removeItem(at: file)
             if patch.setsVersion {
                 let version = versionFile(patch.repository)
@@ -346,7 +360,7 @@ struct FFXIVPatchRunner {
             } else {
                 sizes[patch.repository] = patch.installedSize
             }
-            progress(.applied(index: index, count: patches.count, name: name, version: patch.setsVersion ? patch.target : nil))
+            progress(.applied(index: index, count: patches.count, name: name, version: patch.setsVersion ? patch.target : nil, timing: timing))
         }
         // Every patch is in: the journal has done its job.
         try? FileManager.default.removeItem(at: work)
@@ -367,7 +381,8 @@ struct FFXIVPatchRunner {
 
     // MARK: Downloading
 
-    private func download(_ patch: SquareEnixPatch, to file: URL, index: Int, count: Int) async throws {
+    private func download(_ patch: SquareEnixPatch, to file: URL, index: Int, count: Int) async throws -> Timing {
+        var timing = Timing()
         let name = patch.url.lastPathComponent
         if !FileManager.default.fileExists(atPath: file.path) { FileManager.default.createFile(atPath: file.path, contents: nil) }
         var have = fileSize(file)
@@ -384,16 +399,24 @@ struct FFXIVPatchRunner {
             var request = URLRequest(url: patch.url, timeoutInterval: 60)
             request.setValue("bytes=\(have)-\(last)", forHTTPHeaderField: "Range")
             let (data, reply): (Data, URLResponse)
+            let asked = Date()
             do { (data, reply) = try await session.data(for: request) } catch is CancellationError { throw CancellationError() }
             catch { throw FFXIVPatchError.download("\(name): \((error as? URLError)?.code.rawValue ?? -1)") }
             guard let http = reply as? HTTPURLResponse, http.statusCode == 206, Int64(data.count) == last - have + 1 else {
                 throw FFXIVPatchError.download("\(name): HTTP \((reply as? HTTPURLResponse)?.statusCode ?? 0) for a range")
             }
+            let received = Date()
+            timing.network += received.timeIntervalSince(asked)
             try output.write(contentsOf: data)
+            timing.downloadWrites += Date().timeIntervalSince(received)
+            timing.downloaded += Int64(data.count)
             have += Int64(data.count)
             progress(.downloading(index: index, count: count, name: name, received: have, total: patch.size))
         }
+        let syncing = Date()
         try output.synchronize()
+        timing.downloadWrites += Date().timeIntervalSince(syncing)
+        return timing
     }
 
     /// The size, then the SHA-1 of every block; a mismatch deletes the file.
