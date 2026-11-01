@@ -47,6 +47,9 @@ enum FFXIVPatchError: LocalizedError, Equatable {
 struct ZiPatchApplier {
     /// The folder the patch's paths are relative to: `boot/` for boot patches, `game/` for the rest.
     let root: URL
+    /// Writes up to this many bytes apart are joined by reading the gap in between
+    /// (0: only writes that touch). For a spinning disk (FFXIVPatchRunner.driveSpins).
+    var gapFill = 0
 
     static let signature = Data([0x91, 0x5A, 0x49, 0x50, 0x41, 0x54, 0x43, 0x48, 0x0D, 0x0A, 0x1A, 0x0A])
     /// No chunk seen so far is near this; a larger size means a damaged file, not a big chunk.
@@ -63,7 +66,7 @@ struct ZiPatchApplier {
         defer { try? input.close() }
         let name = patch.lastPathComponent
         guard try input.read(upToCount: 12) == Self.signature else { throw FFXIVPatchError.notAPatch(name) }
-        var files = OpenFiles()
+        var files = OpenFiles(gap: gapFill)
         defer { files.closeAll() }
         var counts: [String: Int] = [:]
         while true {
@@ -263,6 +266,12 @@ private struct OpenFiles {
     private var handles: [String: FileHandle] = [:]
     private var pending: (path: String, url: URL, offset: UInt64, data: Data)?
     static let maxPending = 8 << 20
+    /// On a spinning disk: a write starting at most this far past the buffer's end joins
+    /// it, with the bytes in between read from the file and written back unchanged. They
+    /// are current, because every earlier write to them has been written out already.
+    let gap: Int
+
+    init(gap: Int = 0) { self.gap = gap }
 
     mutating func write<Bytes: DataProtocol>(_ bytes: Bytes, to url: URL, at offset: UInt64, create: Bool) throws {
         // Only scalars are read here: binding `pending` itself would add a second
@@ -270,6 +279,18 @@ private struct OpenFiles {
         if pending?.path == url.path, let start = pending?.offset, let count = pending?.data.count,
            start + UInt64(count) == offset, count + bytes.count <= Self.maxPending {
             pending?.data.append(contentsOf: bytes)   // in place: `pending` holds the only reference
+            return
+        }
+        if gap > 0, pending?.path == url.path, let start = pending?.offset, let count = pending?.data.count,
+           offset > start + UInt64(count), offset - (start + UInt64(count)) <= UInt64(gap),
+           Int(offset - start) + bytes.count <= Self.maxPending {
+            let end = start + UInt64(count), length = Int(offset - end)
+            let handle = try open(url, create: false)
+            try handle.seek(toOffset: end)
+            var between = try handle.read(upToCount: length) ?? Data()
+            if between.count < length { between.append(Data(count: length - between.count)) }   // past the end: a hole reads as zeros
+            pending?.data.append(between)
+            pending?.data.append(contentsOf: bytes)
             return
         }
         try flush()
@@ -351,6 +372,10 @@ struct FFXIVPatchRunner {
         /// After a patch that completes a version: the repository's measured size and
         /// the list's figure for it (field 2), which should match.
         case measured(repository: String, bytes: Int64, expected: Int64)
+        /// The drive was timed: the median of uncached random 4 KiB reads in `file`.
+        case drive(spins: Bool, milliseconds: Double, file: String)
+        /// Anything else worth a log line.
+        case note(String)
     }
 
     let install: URL
@@ -362,24 +387,71 @@ struct FFXIVPatchRunner {
     var reserve: Int64 = 512 << 20
     var progress: (Event) -> Void = { _ in }
 
+    /// Where downloads go with `downloadAhead` (this device's own storage), and where a
+    /// partial download left there is looked for in any case.
+    var staging: URL?
+    /// Download each patch to `staging` and the next one while this one applies, so the
+    /// network doesn't wait for a slow drive. Only while `staging`'s volume keeps
+    /// `stagingReserve` free beyond the patch; otherwise it downloads to `work` in turn.
+    var downloadAhead = false
+    var stagingReserve: Int64 = 1 << 30
+    /// The gap writes are joined across: nil decides by timing the drive (driveSpins),
+    /// a number forces it (0: never; for tests).
+    var gapFill: Int?
+    static let spinningGap = 256 << 10
+    /// A median random read slower than this means a spinning disk (flash: well under 1 ms).
+    static let spinningMilliseconds = 2.5
+
     func run(_ patches: [SquareEnixPatch]) async throws {
         try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        if let staging { try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true) }
         let done = Set(journal())
+        let todo = patches.enumerated().filter { !done.contains(key($0.element)) }
         var sizes: [String: Int64] = [:]
-        for (offset, patch) in patches.enumerated() where !done.contains(key(patch)) {
+        var gap = gapFill
+        var ahead: (offset: Int, file: URL, task: Task<Timing, Error>)?
+        defer { ahead?.task.cancel() }
+        for (step, (offset, patch)) in todo.enumerated() {
             try Task.checkCancellation()
             let index = offset + 1, name = patch.url.lastPathComponent
             if sizes[patch.repository] == nil { sizes[patch.repository] = repositoryBytes(patch.repository) }
-            let file = work.appendingPathComponent("\(patch.repository)-\(name)")
-            try checkSpace(for: patch, have: fileSize(file), current: sizes[patch.repository] ?? 0)
-            var timing = try await download(patch, to: file, index: index, count: patches.count)
+            let file: URL
+            var timing: Timing
+            if let early = ahead, early.offset == offset {
+                ahead = nil
+                file = early.file
+                timing = try await withTaskCancellationHandler { try await early.task.value } onCancel: { early.task.cancel() }
+            } else {
+                file = place(for: patch)
+                try checkDownloadRoom(for: patch, at: file, growth: file.path.hasPrefix(install.path)
+                                      ? max(0, patch.installedSize - (sizes[patch.repository] ?? 0)) : 0)
+                timing = try await download(patch, to: file, index: index, count: patches.count)
+            }
+            // The next patch downloads while this one is checked and applied.
+            if downloadAhead, staging != nil, step + 1 < todo.count {
+                let (nextOffset, next) = todo[step + 1]
+                let nextFile = place(for: next)
+                if nextFile.path.hasPrefix(install.path) {
+                    progress(.note("download-ahead: no room on this device for \(next.url.lastPathComponent), so it downloads in turn"))
+                } else {
+                    let runner = self
+                    let task = Task { try await runner.download(next, to: nextFile, index: nextOffset + 1, count: patches.count) }
+                    ahead = (nextOffset, nextFile, task)
+                }
+            }
             progress(.checking(index: index, count: patches.count, name: name))
             var clock = Date()
             try verify(patch, file: file)
             timing.check = Date().timeIntervalSince(clock)
+            try checkGrowth(for: patch, current: sizes[patch.repository] ?? 0)
+            if gap == nil, let probe = Self.timeRandomReads(under: install.appendingPathComponent("game/sqpack")) {
+                let spins = probe.milliseconds > Self.spinningMilliseconds
+                progress(.drive(spins: spins, milliseconds: probe.milliseconds, file: probe.file))
+                gap = spins ? Self.spinningGap : 0
+            }
             progress(.applying(index: index, count: patches.count, name: name))
             clock = Date()
-            try ZiPatchApplier(root: root(patch.repository)).apply(file)
+            try ZiPatchApplier(root: root(patch.repository), gapFill: gap ?? 0).apply(file)
             timing.apply = Date().timeIntervalSince(clock)
             try FileManager.default.removeItem(at: file)
             if patch.setsVersion {
@@ -405,8 +477,53 @@ struct FFXIVPatchRunner {
             }
             progress(.applied(index: index, count: patches.count, name: name, version: patch.setsVersion ? patch.target : nil, timing: timing))
         }
-        // Every patch is in: the journal has done its job.
+        // Every patch is in: the journal has done its job, and nothing is left to download.
         try? FileManager.default.removeItem(at: work)
+        if let staging { try? FileManager.default.removeItem(at: staging) }
+    }
+
+    /// Where a patch downloads: a partial download already there, wherever it is; with
+    /// downloadAhead, this device's staging folder while it has room; else the work folder.
+    private func place(for patch: SquareEnixPatch) -> URL {
+        let name = "\(patch.repository)-\(patch.url.lastPathComponent)"
+        let local = staging?.appendingPathComponent(name), drive = work.appendingPathComponent(name)
+        if let local, FileManager.default.fileExists(atPath: local.path) { return local }
+        if FileManager.default.fileExists(atPath: drive.path) { return drive }
+        if downloadAhead, let local, let staging,
+           Self.availableCapacity(at: staging) >= patch.size + stagingReserve { return local }
+        return drive
+    }
+
+    // MARK: Timing the drive
+
+    /// The median of 32 uncached random 4 KiB reads in the largest file (at least 256 MiB)
+    /// under `folder`, or nil when there is none yet. iOS can't say whether a drive spins,
+    /// but a head that has to move takes 5 to 15 ms per read and flash well under 1.
+    static func timeRandomReads(under folder: URL) -> (milliseconds: Double, file: String)? {
+        var largest: (url: URL, size: Int64)?
+        let walker = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey])
+        while let url = walker?.nextObject() as? URL {
+            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
+                  let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber else { continue }
+            if size.int64Value > (largest?.size ?? (256 << 20) - 1) { largest = (url, size.int64Value) }
+        }
+        guard let largest else { return nil }
+        let fd = open(largest.url.path, O_RDONLY)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        _ = fcntl(fd, F_NOCACHE, 1)
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        let pages = largest.size / 4096
+        var times: [Double] = []
+        for attempt in 0...32 {
+            let page = Int64.random(in: 0..<pages)
+            let started = DispatchTime.now().uptimeNanoseconds
+            guard pread(fd, &buffer, 4096, off_t(page * 4096)) == 4096 else { return nil }
+            // The first read may wake a sleeping disk: it isn't counted.
+            if attempt > 0 { times.append(Double(DispatchTime.now().uptimeNanoseconds - started) / 1e6) }
+        }
+        times.sort()
+        return (times[times.count / 2], largest.url.lastPathComponent)
     }
 
     func root(_ repository: String) -> URL {
@@ -486,10 +603,18 @@ struct FFXIVPatchRunner {
 
     // MARK: Space
 
-    /// Room for the rest of the download plus the repository's growth.
-    private func checkSpace(for patch: SquareEnixPatch, have: Int64, current: Int64) throws {
-        let needed = (patch.size - have) + max(0, patch.installedSize - current) + reserve
-        let available = Self.availableCapacity(at: install)   // read afresh for every patch
+    /// Room on the download's volume for the rest of it, plus `growth` when that is also
+    /// the install's volume (downloading to the work folder).
+    private func checkDownloadRoom(for patch: SquareEnixPatch, at file: URL, growth: Int64) throws {
+        let needed = (patch.size - fileSize(file)) + growth + reserve
+        let available = Self.availableCapacity(at: file.deletingLastPathComponent())   // read afresh every time
+        if available < needed { throw FFXIVPatchError.notEnoughSpace(needed: needed, available: available) }
+    }
+
+    /// Room on the install's volume for the repository's growth, before applying.
+    private func checkGrowth(for patch: SquareEnixPatch, current: Int64) throws {
+        let needed = max(0, patch.installedSize - current) + reserve
+        let available = Self.availableCapacity(at: install)
         if available < needed { throw FFXIVPatchError.notEnoughSpace(needed: needed, available: available) }
     }
 

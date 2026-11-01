@@ -63,7 +63,21 @@ import SwiftUI
         var done: Int64 = 0
         var total: Int64 = 0
         var paused = false
+        /// Download the next patch to this device while one applies (the Update section's switch).
+        var downloadAhead = false
+        /// The patch being checked or applied, and the next one's download meanwhile.
+        var current: Int?
+        var ahead: String?
     }
+
+    /// Where patches downloaded ahead wait on this device: Caches, which iOS may empty
+    /// while Madeira isn't running (the download then starts again).
+    nonisolated static var stagingFolder: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("madeira-ffxiv-downloads", isDirectory: true)
+    }
+    /// What download-ahead keeps free on this device beyond the patch (FFXIVPatchRunner.stagingReserve).
+    nonisolated static let stagingReserve: Int64 = 1 << 30
 
     @Published private(set) var job: Job?
     @Published var error: String?
@@ -167,7 +181,7 @@ import SwiftUI
     // MARK: Update
 
     /// Applies the patches sign-in reported for an entry's install, wherever it is.
-    func update(entry: LibraryEntry, update: SquareEnixUpdate) {
+    func update(entry: LibraryEntry, update: SquareEnixUpdate, downloadAhead: Bool = false) {
         guard job == nil else { error = "A FINAL FANTASY XIV download is already running."; return }
         guard !update.patches.isEmpty else { return }
         error = nil
@@ -175,8 +189,10 @@ import SwiftUI
         let root: URL
         do { root = try Self.nativeRoot(relative) } catch { self.error = error.localizedDescription; return }
         patches = update.patches
-        job = Job(kind: .update, entryID: entry.id, relativeRoot: relative, root: root, detail: "Starting…", total: update.downloadBytes)
-        log("update: \(update.patches.count) \(update.stage.rawValue) patches, \(update.downloadBytes) bytes, to \(update.target ?? "?")")
+        job = Job(kind: .update, entryID: entry.id, relativeRoot: relative, root: root, detail: "Starting…", total: update.downloadBytes,
+                  downloadAhead: downloadAhead)
+        log("update: \(update.patches.count) \(update.stage.rawValue) patches, \(update.downloadBytes) bytes, to \(update.target ?? "?")" +
+            (downloadAhead ? ", downloading ahead to this device" : ""))
         start()
     }
 
@@ -215,6 +231,11 @@ import SwiftUI
         let offsets = patches.reduce(into: [Int64(0)]) { $0.append($0.last! + $1.size) }
         background.downloadStarted(appID: 0, name: Self.title)
         var runner = FFXIVPatchRunner(install: root)
+        runner.staging = Self.stagingFolder   // also where a partial download from an earlier run is looked for
+        runner.downloadAhead = job.downloadAhead
+        runner.stagingReserve = Self.stagingReserve
+        self.job?.current = nil
+        self.job?.ahead = nil
         runner.progress = { event in Task { @MainActor in FFXIVLibrary.shared.report(event, offsets: offsets) } }
         let configured = runner
         let task = Task.detached(priority: .utility) { try await configured.run(patches) }
@@ -239,17 +260,27 @@ import SwiftUI
     private func report(_ event: FFXIVPatchRunner.Event, offsets: [Int64]) {
         guard job != nil, job?.paused == false else { return }
         switch event {
-        case .downloading(let index, let count, let name, let received, _):
+        case .downloading(let index, let count, let name, let received, let total):
+            if let current = job?.current, index > current {
+                // The next patch, downloading ahead while this one is checked or applied.
+                job?.ahead = "Downloading next: \(name), \(ByteCountFormatter.string(fromByteCount: received, countStyle: .file))" +
+                    " of \(ByteCountFormatter.string(fromByteCount: total, countStyle: .file))"
+                return
+            }
+            job?.ahead = nil
             job?.done = offsets[index - 1] + received
             job?.detail = "Downloading \(index) of \(count): \(name)"
             background.progress(doneBytes: UInt64(max(0, job?.done ?? 0)), totalBytes: UInt64(max(1, job?.total ?? 1)))
         case .checking(let index, let count, let name):
+            job?.current = index
             job?.detail = "Checking \(index) of \(count): \(name)"
         case .applying(let index, let count, let name):
+            job?.current = index
             job?.done = offsets[index]
             job?.detail = "Applying \(index) of \(count): \(name)"
         case .applied(let index, _, let name, let version, let timing):
             job?.done = offsets[index]
+            job?.current = nil
             let size = offsets[index] - offsets[index - 1]
             let rate = { (bytes: Int64, seconds: Double) in seconds > 0 ? String(format: "%.1f MB/s", Double(bytes) / seconds / 1e6) : "-" }
             log("applied \(name)" + (version.map { ", now \($0)" } ?? "") + String(
@@ -259,6 +290,11 @@ import SwiftUI
                 timing.check, rate(size, timing.check), timing.apply, rate(size, timing.apply)))
         case .measured(let repository, let bytes, let expected):
             log("size check \(repository): \(bytes) bytes, the list says \(expected)" + (bytes == expected ? ", same" : ", DIFFERENT"))
+        case .drive(let spins, let milliseconds, let file):
+            log(String(format: "drive: median uncached random read %.2f ms in %@, so %@", milliseconds, file,
+                       spins ? "a spinning disk: writes up to 256 KiB apart are joined" : "flash: only touching writes are joined"))
+        case .note(let text):
+            log(text)
         }
     }
 
@@ -463,6 +499,7 @@ struct FFXIVJobStatus: View {
                 ProgressView()
             }
             Text(job.detail).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
+            if let ahead = job.ahead { Text(ahead).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
             if job.total > 0 {
                 Text("\(ffxivBytes(job.done)) of \(ffxivBytes(job.total))").font(.caption).foregroundStyle(.secondary).monospacedDigit()
             }
@@ -488,6 +525,12 @@ struct FFXIVUpdateSection: View {
     @Binding var update: SquareEnixUpdate?
     @ObservedObject private var ffxiv = FFXIVLibrary.shared
     @State private var space: (needed: Int64, free: Int64)?
+    /// Download-ahead: off until chosen, then remembered. It writes every patch to this
+    /// device's storage once more, which wears its flash.
+    @AppStorage("madeiraFFXIVDownloadAhead") private var downloadAhead = false
+    @State private var phoneFree: Int64?
+
+    private var device: String { UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone" }
 
     var body: some View {
         if let job = ffxiv.job, ffxiv.isBusy(entry.id) {
@@ -501,8 +544,9 @@ struct FFXIVUpdateSection: View {
                     LabeledContent("Space needed", value: ffxivBytes(space.needed))
                     LabeledContent("Free", value: ffxivBytes(space.free))
                 }
+                Toggle("Download ahead to this \(device)", isOn: $downloadAhead)
                 Button("Update") {
-                    ffxiv.update(entry: entry, update: update)
+                    ffxiv.update(entry: entry, update: update, downloadAhead: downloadAhead)
                     if ffxiv.error == nil { self.update = nil }
                 }
                 .disabled(ffxiv.job != nil || space == nil || (space.map { $0.free < $0.needed } ?? true))
@@ -513,6 +557,8 @@ struct FFXIVUpdateSection: View {
                 Text(footer(update))
             }
             .task(id: update) {
+                let staging = FFXIVLibrary.stagingFolder.deletingLastPathComponent()
+                phoneFree = await Task.detached { FFXIVLibrary.freeSpace(at: staging) }.value
                 let relative = LibraryModel.shared.relativeRoot(entry), patches = update.patches
                 space = await Task.detached(priority: .utility) {
                     // The real folder, so an install on a drive measures that drive.
@@ -530,6 +576,14 @@ struct FFXIVUpdateSection: View {
             ? "The game's boot programs need an update. After it, press Play again to sign in."
             : "Square Enix listed these patches when you signed in. After the update, press Play again."
         if let space, space.free < space.needed { text += " Free up space first: this update needs more than the device has." }
+        let largest = update.patches.map(\.size).max() ?? 0
+        text += " Download ahead fetches the next patch to this \(device) while one is applied, so a slow drive doesn't hold up the" +
+            " download. It writes every patch to the \(device)'s storage once more, which adds wear, and holds up to two patches" +
+            " (about \(ffxivBytes(2 * largest))) at a time, only while the \(device) has room for the next one plus" +
+            " \(ffxivBytes(FFXIVLibrary.stagingReserve)); otherwise that patch downloads to the game's drive as usual."
+        if downloadAhead, let phoneFree, phoneFree < largest + FFXIVLibrary.stagingReserve {
+            text += " This \(device) has \(ffxivBytes(phoneFree)) free, too little for the largest patch, so downloads will mostly go to the drive."
+        }
         return text
     }
 }

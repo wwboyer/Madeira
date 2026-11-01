@@ -359,6 +359,30 @@ update has run on a device yet.
   the next one to it when it starts exactly where the buffer ends (up to
   8 MiB), writing it out before anything else; that patch then needs 2,115
   writes. Bytes and order are unchanged (ex1 still rebuilds byte for byte).
+  That changed little on the device: the patches' edits are separate
+  regions, not out of order (sorting them by offset leaves the counts
+  unchanged), and the iPhone's drive was a small spinning disk doing about 80
+  random operations a second (`D2026.04.10.0000.0000`: ~7,700 writes and
+  ~14,800 partial-page reads in 284 s). Three measures followed:
+  - **Spinning-disk detection:** iOS can't say whether a drive spins, so
+    before the first patch that edits an existing data file, the runner
+    times 32 uncached (`F_NOCACHE`) random 4 KiB reads in the install's
+    largest file (at least 256 MiB). A median over 2.5 ms means a spinning
+    disk (5 to 15 ms per read); the Mac's SSD measured 0.14 ms. The result
+    is logged (`[ffxiv-patch] drive: …`).
+  - **Gap filling, on spinning disks only:** a write starting at most
+    256 KiB after the buffered one joins it, with the bytes between read
+    from the file and written back unchanged; they are current, since
+    every earlier write to them has gone out. Estimated a third fewer
+    random operations for that patch (279 MB more read and written).
+  - **Download-ahead, a switch in the Update section, off by default:**
+    patches download to this device's Caches folder, and the next one
+    downloads while the current one is checked and applied, so a slow drive
+    doesn't hold up the network (and a staged patch is read back from fast
+    storage). Only while the device has room for that patch plus 1 GiB;
+    otherwise it downloads to the install's work folder in turn. It writes
+    every patch to the device's flash once more, hence the switch. A partial
+    download in either folder is resumed.
 - **Applier:** `app/Madeira/FFXIVPatcher.swift` (done 2026-10-31), new
   Swift code from this document. `ZiPatchApplier` streams a patch chunk by
   chunk, checks every chunk's CRC32, keeps paths inside the folder, and
@@ -458,3 +482,4 @@ code is copied.
 | Resume | the runner killed 45 s into a fresh ex1 run (part `a` applied, part `b` 738 MB downloaded), then run again | it skipped `a`, continued `b` from its byte offset, and ended byte-identical; a stray file in an empty ex1 made `R` stop the run with nothing changed |
 | Free-space check | 2 GiB written while reading the volume's free space through one URL and through fresh ones | the reused URL kept reporting the old figure (cached resource values), so the runner reads through a fresh URL each time |
 | Base history and `D` at the end | all 34 base history parts streamed and simulated, then `D2024.06.13.0000.0001` replayed over sparse files of those sizes (2026-10-31) | the history build totals exactly field 2 (54,523,146,100 bytes); three of that patch's `D` start exactly at their file's end, and applying them as appends completes the patch |
+| Gap filling and download-ahead | the runner with gaps forced to 256 KiB and download-ahead to a staging folder: fresh ex1, a run killed 45 s in and resumed, the snapshot update (2026-10-31) | all byte-identical to the installed ex1; the killed run resumed part `b` from 402 MB in the staging folder |
