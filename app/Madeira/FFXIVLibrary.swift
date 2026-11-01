@@ -251,6 +251,8 @@ import SwiftUI
         case .applied(let index, _, let name, let version):
             job?.done = offsets[index]
             log("applied \(name)" + (version.map { ", now \($0)" } ?? ""))
+        case .measured(let repository, let bytes, let expected):
+            log("size check \(repository): \(bytes) bytes, the list says \(expected)" + (bytes == expected ? ", same" : ", DIFFERENT"))
         }
     }
 
@@ -304,7 +306,7 @@ import SwiftUI
 
     private func fail(_ failure: Error) {
         let message = (failure as? LocalizedError)?.errorDescription ?? failure.localizedDescription
-        log("stopped: \(message)")
+        log("stopped: \(message)" + (job.map { " (\($0.detail); at \($0.relativeRoot))" } ?? ""))
         if job != nil { background.downloadEnded(appID: 0, name: Self.title, outcome: .failed(message), queueEmpty: true) }
         runTask = nil
         job = nil

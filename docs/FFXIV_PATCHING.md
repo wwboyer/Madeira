@@ -271,10 +271,17 @@ counts are in 128-byte blocks.
   count × 128 zero bytes at the offset, the first 20 of them an empty-block
   header, little-endian: 128, 0, 0, **count − 1**, 0. xiv.dev gives the count
   itself; the ex1 rebuild showed count − 1 in all 1,306 such blocks it
-  compared. It must not write past the end of the file.
+  compared.
 - **`E`** (expand), from xiv.dev only: the same fields as `D`, allowed to
   extend the file. Not seen in any patch so far, and since xiv.dev's `D`
   header was wrong, the applier refuses `E` until one is seen.
+
+  A `D` may start exactly at the end of its file and so append empty blocks,
+  against xiv.dev's "fails at the end of the file": the base game's
+  `D2024.06.13.0000.0001` does it three times, each right after its own `A`
+  commands grew the file to that point (found when an install stopped there,
+  2026-10-31). A `D` that would start beyond the end, leaving a gap, has not
+  been seen and is refused.
 
 The ex1 patch `D2026.08.20.0000.0000` has two `A` commands (one into each of
 `030100.win32.dat0` and `dat1`) and four `H` (version and data header of
@@ -329,6 +336,10 @@ update has run on a device yet.
      (resuming with ranges), check each 50,000,000-byte block's SHA-1, apply,
      delete, and write the version file when field 5 is a version.
   An update is steps 3 and 4 on an existing install.
+- **Size check:** after each patch that completes a version, the runner
+  measures the repository as field 2 counts it and logs the two figures
+  (`[ffxiv-patch] size check`). It doesn't stop the run, because an existing
+  install may hold files no patch made.
 - **Applier:** `app/Madeira/FFXIVPatcher.swift` (done 2026-10-31), new
   Swift code from this document. `ZiPatchApplier` streams a patch chunk by
   chunk, checks every chunk's CRC32, keeps paths inside the folder, and
@@ -427,3 +438,4 @@ code is copied.
 | Boot bootstrap | the runner on the boot list for `2012.01.01.0000.0000` (`D2013.06.18.0000.0000`, then `D2026.08.18.0000.0001`) into an empty install (2026-10-31) | all 18 files written, `ffxivboot.ver`/`.bck` included, identical to the official app's boot folder (whose shader cache is a link, not a patch file) |
 | Resume | the runner killed 45 s into a fresh ex1 run (part `a` applied, part `b` 738 MB downloaded), then run again | it skipped `a`, continued `b` from its byte offset, and ended byte-identical; a stray file in an empty ex1 made `R` stop the run with nothing changed |
 | Free-space check | 2 GiB written while reading the volume's free space through one URL and through fresh ones | the reused URL kept reporting the old figure (cached resource values), so the runner reads through a fresh URL each time |
+| Base history and `D` at the end | all 34 base history parts streamed and simulated, then `D2024.06.13.0000.0001` replayed over sparse files of those sizes (2026-10-31) | the history build totals exactly field 2 (54,523,146,100 bytes); three of that patch's `D` start exactly at their file's end, and applying them as appends completes the patch |

@@ -122,9 +122,15 @@ struct ZiPatchApplier {
             let offset = UInt64(body.be32(0x0B)) * UInt64(Self.block)
             let count = Int(body.be32(0x0F))
             guard count > 0 else { throw FFXIVPatchError.damaged("a delete of no blocks") }
-            let handle = try files.open(try datPath(body, kind: "D"), create: false)
-            guard try handle.seekToEnd() >= offset + UInt64(count * Self.block) else {
-                throw FFXIVPatchError.damaged("a delete past the end of a data file")
+            let target = try datPath(body, kind: "D")
+            let handle = try files.open(target, create: false)
+            let size = try handle.seekToEnd(), end = offset + UInt64(count * Self.block)
+            // A delete may start exactly at the end and so append empty blocks: base
+            // game D2024.06.13 does it three times (2026-10-31). One that would leave a
+            // gap before it has never been seen, so it isn't applied.
+            guard offset <= size else {
+                throw FFXIVPatchError.damaged("a delete beyond the end of \(target.deletingLastPathComponent().lastPathComponent)/" +
+                                              "\(target.lastPathComponent) (from byte \(offset) to \(end); the file has \(size))")
             }
             // The empty-block header holds count - 1 (the ex1 rebuild; xiv.dev says count).
             var empty = Data(count: count * Self.block)
@@ -289,6 +295,9 @@ struct FFXIVPatchRunner {
         case checking(index: Int, count: Int, name: String)
         case applying(index: Int, count: Int, name: String)
         case applied(index: Int, count: Int, name: String, version: String?)
+        /// After a patch that completes a version: the repository's measured size and
+        /// the list's figure for it (field 2), which should match.
+        case measured(repository: String, bytes: Int64, expected: Int64)
     }
 
     let install: URL
@@ -324,7 +333,14 @@ struct FFXIVPatchRunner {
                 }
             }
             try record(patch)
-            sizes[patch.repository] = patch.installedSize
+            if patch.setsVersion {
+                // An integrity check, not a stop: an existing install may hold files no patch made.
+                let measured = repositoryBytes(patch.repository)
+                progress(.measured(repository: patch.repository, bytes: measured, expected: patch.installedSize))
+                sizes[patch.repository] = measured
+            } else {
+                sizes[patch.repository] = patch.installedSize
+            }
             progress(.applied(index: index, count: patches.count, name: name, version: patch.setsVersion ? patch.target : nil))
         }
         // Every patch is in: the journal has done its job.

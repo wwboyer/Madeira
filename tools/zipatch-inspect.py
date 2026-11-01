@@ -246,7 +246,11 @@ def apply_patch(path, game):
                     raise SystemExit('SQPK E (expand) is not confirmed yet; not applied')
                 elif command in 'ADH':
                     fpath, offset, fill = dat_command(command, body)
-                    write_at(os.path.join(game, 'sqpack', *fpath.split('/')), offset, fill, extend=command != 'D')
+                    target = os.path.join(game, 'sqpack', *fpath.split('/'))
+                    # A delete may start exactly at the end (appending empty blocks), never beyond it.
+                    if command == 'D' and (not os.path.exists(target) or offset > os.path.getsize(target)):
+                        raise SystemExit(f'D beyond the end of {fpath}')
+                    write_at(target, offset, fill)
                 elif command not in 'XTI':
                     raise SystemExit(f'unknown SQPK command {command!r}')
                 counts[command] += 1
