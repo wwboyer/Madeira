@@ -670,8 +670,8 @@ check(R.gta5LegacySteam.fileText.hasSuffix("env.MADEIRA_JIT_DUMP = 0\nswap-mb = 
       "an 8 GB phone: the 3 GB RAM swap after GTA V Legacy's list")
 check(R.gta5LegacyOther.fileText.hasSuffix("env.MADEIRA_JIT_DUMP = 0\nswap-mb = 3072\n"),
       "an 8 GB phone: the 3 GB RAM swap after GTA V Legacy's list outside Steam too")
-check(zip(R.all, onTwelve).allSatisfy { $0.0.id == "gta5l-steam" || $0.0.id == "gta5l-other" || $0.0.fileText == $0.1 },
-      "every other list is the same on an 8 GB phone")
+check(zip(R.all, onTwelve).allSatisfy { $0.0.smallRAMConfig != nil || $0.0.fileText == $0.1 },
+      "every list without small-device lines is the same on an 8 GB phone")
 R.deviceRAMBytes = 11_695 << 20
 check(id(other + #"\PlayGTAV.exe"#) == "none", "PlayGTAV.exe without GTA5_Enhanced.exe beside it")
 check(id(#"C:\GhostOfTsushima\GhostOfTsushima.exe"#) == "ghost-of-tsushima", "GoT by its program")
