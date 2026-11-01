@@ -201,7 +201,8 @@ that iPadOS granted it. A request alone is not proof of containment; see
   captures the mouse. The lock is released as soon as the program shows a
   cursor, when the program loses focus, and when the program stops draining
   the mouse (no report for 2 s while the mouse moves, e.g. it exited).
-  `MADEIRA_POINTER_AUTOLOCK=0` turns this off.
+  `MADEIRA_POINTER_AUTOLOCK=0` turns this off; a game's
+  `MADEIRA_POINTER_HIDDEN_ABSOLUTE=1` keeps it off and the motion absolute.
 - **Relative pointer mode:** the existing Relative toggle also selects relative
   hardware mouse motion and automatic lock. It does not need a cursor report
   from the game. A desktop game that hides its cursor also keeps its automatic
@@ -264,6 +265,7 @@ and restart to enable the fixes again. The same switch is listed in Settings > A
 | `MADEIRA_POINTER_ABSOLUTE` | on | `0`: the program's cursor never follows the pointer's position; all motion is relative. |
 | `MADEIRA_POINTER_LOCK` | on | `0`: never lock the pointer; no lock button, Ctrl+Alt+P is sent to the program. |
 | `MADEIRA_POINTER_AUTOLOCK` | on | `0`: lock only by hand (Ctrl+Alt+P or the lock button). |
+| `MADEIRA_POINTER_HIDDEN_ABSOLUTE` | off | `1` (a game's own config): the program's cursor follows the pointer's position even while the program hides it, and the pointer never locks by itself. For a game that draws its own cursor at the cursor position, where relative motion lags the pointer and stops short of the screen edges. |
 | `MADEIRA_NAV_KEYS_E0` | on | `0`: the driver's previous extended-key flags for the navigation keys. |
 
 ## Logs
