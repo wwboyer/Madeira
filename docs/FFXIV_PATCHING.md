@@ -290,9 +290,9 @@ bytes that were there, which a wrong offset, path or field would not.
 
 ## Madeira's design (agreed 2026-10-31)
 
-Built on 2026-10-31 (`FFXIVPatcher.swift`, `FFXIVLibrary.swift`) and tried on
-an iPhone up to the Update section's 204-patch list; no full install or
-update has run on a device yet.
+Built on 2026-10-31 (`FFXIVPatcher.swift`, `FFXIVLibrary.swift`). A full fresh
+install on an iPhone, to an external drive, ended byte-identical to the
+official Mac app's install and played (2026-11-01; see the confirmation log).
 
 - **Library section:** "FINAL FANTASY XIV" (`app/Madeira/FFXIVLibrary.swift`,
   built 2026-10-31), shown like the Epic Games section and switched by
@@ -496,3 +496,4 @@ code is copied.
 | Free-space check | 2 GiB written while reading the volume's free space through one URL and through fresh ones | the reused URL kept reporting the old figure (cached resource values), so the runner reads through a fresh URL each time |
 | Base history and `D` at the end | all 34 base history parts streamed and simulated, then `D2024.06.13.0000.0001` replayed over sparse files of those sizes (2026-10-31) | the history build totals exactly field 2 (54,523,146,100 bytes); three of that patch's `D` start exactly at their file's end, and applying them as appends completes the patch |
 | Gap filling and download-ahead | the runner with gaps forced to 256 KiB and download-ahead to a staging folder: fresh ex1, a run killed 45 s in and resumed, the snapshot update (2026-10-31) | all byte-identical to the installed ex1; the killed run resumed part `b` from 402 MB in the staging folder |
+| Whole fresh install on an iPhone | Madeira installed the game from nothing onto an external APFS spinning disk (all 204 patches plus the boot patches), then the drive was compared with the official Mac app's install at the same versions, SHA-256 per file (2026-11-01) | all 256 files present on both byte-identical (129.0 GB), and the four opening movies (links into the app's own bottle on the Mac) identical too; the only other differences are the Mac app's shader cache link `boot/cache_ffxiv_dx11.exe.bin`, which no patch makes, and Finder's `.DS_Store` files; the game played |
