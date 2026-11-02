@@ -195,11 +195,32 @@ Byte order is big-endian unless a field says otherwise.
 
 ### Chunks
 
-- **`FHDR`** comes first. In the boot patch observed, its payload was 20
-  bytes, with the version byte (`2`) at offset 2 and `HIST` at offset 4, even
-  though the file is a `D` patch. In the game patches observed (base game
-  and ex1) it is 244 bytes, version byte `3`, named `DIFF`. Its other fields
-  are unknown.
+- **`FHDR`** comes first. The applier doesn't use it: nothing in it changes
+  what is written, and the chunks' CRC32s, the blocks' SHA-1s and the size
+  check already cover integrity. What is known (compared on 2026-11-01 with
+  what five game patches actually contain):
+  - **Size and version:** the boot patch's payload was 20 bytes with version
+    byte `2` at offset 2; game patches' are 244 bytes with version `3`.
+  - **Name** (offset 4): `HIST` or `DIFF`, but it doesn't say which kind of
+    patch the file is: the boot `D` patch and the base game's update patches
+    `D2024.06.13.0000.0001` and `D2025.09.09.0000.0001` say `HIST`, and an
+    ex1 history part says `DIFF`.
+  - **Repository ID** (offset 0x20, 4 bytes): the ID in the patch's URL
+    (`4e9a232b` for the base game, `6b936f08` for ex1), as xiv.dev says.
+  - **Command counts, in some files** (big-endian 4-byte words): 0x28 `A`,
+    0x2c `D`, 0x30 `E`, 0x34 `H`, 0x38 `F`. Base game
+    `D2026.04.10.0000.0000` has 13,615 / 157 / 0 / 26 / 44 there against
+    13,614 / 157 / 0 / 26 / 44 commands actually in it (the `A` count off by
+    one); ex1 `D2026.08.20.0000.0000` has 2 `A` and 4 `H`, and base game
+    `D2026.10.16.0000.0000` 35 `F`, all exact. The `E` count was 0 in every
+    header that holds counts, matching `E` never having been seen.
+  - **Leftover memory, in others:** in `D2024.06.13` and `D2025.09.09`
+    (the two named `HIST`) the count area holds values like 913,958,193 next
+    to 32,758 (`0x7FF6`), which look like halves of 64-bit Windows user-mode
+    pointers, not counts. So the counts can't be relied on; as a sanity
+    check they would only fit the files where they make sense.
+  - The remaining fields (from 0x40 on: several large values, small ones
+    like 1, 12 or 1,369,856) are unknown.
 - **`APLY`** chunks hold three 4-byte fields: option, reserved, value. Two
   follow `FHDR`: option 1 ("ignore missing") and option 2 ("ignore
   mismatch"), both with value `0`, meaning missing or mismatched data is an
