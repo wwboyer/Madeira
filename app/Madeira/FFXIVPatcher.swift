@@ -50,11 +50,18 @@ struct ZiPatchApplier {
     /// Writes up to this many bytes apart are joined by reading the gap in between
     /// (0: only writes that touch). For a spinning disk (FFXIVPatchRunner.driveSpins).
     var gapFill = 0
-    /// How far into the patch file applying has got, in bytes: about every
-    /// `progressStep` and once at the end. iOS ends a background task whose progress
-    /// stops moving, and one patch can take minutes to apply to a spinning disk.
+    /// How far into the patch file applying has got, in bytes: every `progressStep`,
+    /// at least once a `progressInterval` while chunks keep finishing, and once at the
+    /// end. iOS ends a background task whose progress stops for about 30 s (its
+    /// scheduler's log: "has not reported progress within expected cadence"), and one
+    /// patch can take minutes to apply to a spinning disk.
     var progress: ((Int64) -> Void)? = nil
     static let progressStep: Int64 = 8 << 20
+    static let progressInterval: UInt64 = 1_000_000_000   // nanoseconds
+    /// A chunk that took at least `slowSeconds` to read and apply, the end-of-patch
+    /// flush to the drive (EOF_) included: its type, the file offset it ends at, seconds.
+    var slow: ((String, Int64, Double) -> Void)? = nil
+    static let slowSeconds = 5.0
 
     static let signature = Data([0x91, 0x5A, 0x49, 0x50, 0x41, 0x54, 0x43, 0x48, 0x0D, 0x0A, 0x1A, 0x0A])
     /// No chunk seen so far is near this; a larger size means a damaged file, not a big chunk.
@@ -75,10 +82,12 @@ struct ZiPatchApplier {
         defer { files.closeAll() }
         var counts: [String: Int] = [:]
         var position = Int64(Self.signature.count), reported: Int64 = 0
+        var reportedAt = DispatchTime.now().uptimeNanoseconds
         // Each chunk in its own autorelease pool: FileHandle's reads hand back autoreleased
         // buffers, and a run that never suspends (download-ahead) would otherwise keep a
         // whole patch's worth of them alive until it does.
         while try autoreleasepool(invoking: { () throws -> Bool in
+            let started = DispatchTime.now().uptimeNanoseconds
             guard let head = try input.read(upToCount: 8), head.count == 8 else {
                 throw FFXIVPatchError.damaged("\(name) ends before its EOF_ chunk")
             }
@@ -95,9 +104,16 @@ struct ZiPatchApplier {
             guard UInt32(crc) == stored else { throw FFXIVPatchError.damaged("\(name) fails its checksum in a \(kind) chunk") }
             counts[kind, default: 0] += 1
             position += Int64(12 + size)
-            if position - reported >= Self.progressStep, let progress {
+            let now = DispatchTime.now().uptimeNanoseconds
+            if let progress, position - reported >= Self.progressStep || now - reportedAt >= Self.progressInterval {
                 reported = position
+                reportedAt = now
                 progress(position)
+            }
+            let end = position
+            defer {
+                let seconds = Double(DispatchTime.now().uptimeNanoseconds - started) / 1e9
+                if seconds >= Self.slowSeconds { slow?(kind, end, seconds) }
             }
             switch kind {
                 case "EOF_":
@@ -507,7 +523,11 @@ struct FFXIVPatchRunner {
             clock = Date()
             let report = progress
             try ZiPatchApplier(root: root(patch.repository), gapFill: gap ?? 0,
-                               progress: { report(.applyProgress(index: index, bytes: $0)) }).apply(file)
+                               progress: { report(.applyProgress(index: index, bytes: $0)) },
+                               slow: { kind, end, seconds in
+                                   report(.note(String(format: "slow chunk: %@ ending at byte %lld of %@ took %.1f s",
+                                                       kind, end, name, seconds)))
+                               }).apply(file)
             timing.apply = Date().timeIntervalSince(clock)
             try FileManager.default.removeItem(at: file)
             if patch.setsVersion {
