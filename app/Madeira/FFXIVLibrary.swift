@@ -230,6 +230,9 @@ import SwiftUI
         let patches = patches, root = job.root
         let offsets = patches.reduce(into: [Int64(0)]) { $0.append($0.last! + $1.size) }
         background.downloadStarted(appID: 0, name: Self.title)
+        work = [:]
+        workFloor = nil
+        workReported = 0
         var runner = FFXIVPatchRunner(install: root)
         runner.staging = Self.stagingFolder   // also where a partial download from an earlier run is looked for
         runner.downloadAhead = job.downloadAhead
@@ -257,10 +260,33 @@ import SwiftUI
         }
     }
 
+    // What iOS's progress for the background task counts (SteamDownloadBackground): each
+    // patch three times its size, once each for downloading, checking and applying, so it
+    // keeps moving whichever of them is slow. iOS ends a continued-processing task whose
+    // progress stops moving: on 2026-11-02 it did so seconds after Madeira left the
+    // foreground, when download-ahead had kept every download out of the count and
+    // checking and applying weren't counted at all.
+    private struct Work { var downloaded: Int64 = 0, checked: Int64 = 0, applied: Int64 = 0 }
+    private var work: [Int: Work] = [:]
+    /// The first patch not yet applied in this run; the ones before it count in full.
+    private var workFloor: Int?
+    private var workReported: Int64 = 0
+
+    private func reportWork(offsets: [Int64]) {
+        guard let floor = workFloor, let total = offsets.last else { return }
+        let current = work.filter { $0.key >= floor }.values.reduce(Int64(0)) { $0 + $1.downloaded + $1.checked + $1.applied }
+        workReported = max(workReported, 3 * offsets[floor - 1] + current)
+        background.progress(doneBytes: UInt64(workReported), totalBytes: UInt64(max(1, 3 * total)))
+    }
+
     private func report(_ event: FFXIVPatchRunner.Event, offsets: [Int64]) {
         guard job != nil, job?.paused == false else { return }
+        let size = { (index: Int) in offsets[index] - offsets[index - 1] }
+        defer { reportWork(offsets: offsets) }
         switch event {
         case .downloading(let index, let count, let name, let received, let total):
+            workFloor = workFloor ?? index
+            work[index, default: Work()].downloaded = min(received, size(index))
             if let current = job?.current, index > current {
                 // The next patch, downloading ahead while this one is checked or applied.
                 job?.ahead = "Downloading next: \(name), \(ByteCountFormatter.string(fromByteCount: received, countStyle: .file))" +
@@ -270,24 +296,33 @@ import SwiftUI
             job?.ahead = nil
             job?.done = offsets[index - 1] + received
             job?.detail = "Downloading \(index) of \(count): \(name)"
-            background.progress(doneBytes: UInt64(max(0, job?.done ?? 0)), totalBytes: UInt64(max(1, job?.total ?? 1)))
         case .checking(let index, let count, let name):
+            workFloor = workFloor ?? index
+            work[index] = Work(downloaded: size(index))
             job?.current = index
             job?.detail = "Checking \(index) of \(count): \(name)"
+        case .checkProgress(let index, let bytes):
+            work[index, default: Work(downloaded: size(index))].checked = min(bytes, size(index))
         case .applying(let index, let count, let name):
+            workFloor = workFloor ?? index
+            work[index] = Work(downloaded: size(index), checked: size(index))
             job?.current = index
             job?.done = offsets[index]
             job?.detail = "Applying \(index) of \(count): \(name)"
+        case .applyProgress(let index, let bytes):
+            work[index, default: Work(downloaded: size(index), checked: size(index))].applied = min(bytes, size(index))
         case .applied(let index, _, let name, let version, let timing):
+            workFloor = index + 1
+            work = work.filter { $0.key > index }
             job?.done = offsets[index]
             job?.current = nil
-            let size = offsets[index] - offsets[index - 1]
+            let patchBytes = size(index)
             let rate = { (bytes: Int64, seconds: Double) in seconds > 0 ? String(format: "%.1f MB/s", Double(bytes) / seconds / 1e6) : "-" }
             log("applied \(name)" + (version.map { ", now \($0)" } ?? "") + String(
                 format: "; downloaded %lld bytes: network %.1f s (%@), drive writes %.1f s (%@); check %.1f s (%@); apply %.1f s (%@)",
                 timing.downloaded, timing.network, rate(timing.downloaded, timing.network),
                 timing.downloadWrites, rate(timing.downloaded, timing.downloadWrites),
-                timing.check, rate(size, timing.check), timing.apply, rate(size, timing.apply)))
+                timing.check, rate(patchBytes, timing.check), timing.apply, rate(patchBytes, timing.apply)))
         case .measured(let repository, let bytes, let expected):
             log("size check \(repository): \(bytes) bytes, the list says \(expected)" + (bytes == expected ? ", same" : ", DIFFERENT"))
         case .drive(let spins, let milliseconds, let file):

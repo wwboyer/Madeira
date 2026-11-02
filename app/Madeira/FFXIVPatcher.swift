@@ -50,6 +50,11 @@ struct ZiPatchApplier {
     /// Writes up to this many bytes apart are joined by reading the gap in between
     /// (0: only writes that touch). For a spinning disk (FFXIVPatchRunner.driveSpins).
     var gapFill = 0
+    /// How far into the patch file applying has got, in bytes: about every
+    /// `progressStep` and once at the end. iOS ends a background task whose progress
+    /// stops moving, and one patch can take minutes to apply to a spinning disk.
+    var progress: ((Int64) -> Void)? = nil
+    static let progressStep: Int64 = 8 << 20
 
     static let signature = Data([0x91, 0x5A, 0x49, 0x50, 0x41, 0x54, 0x43, 0x48, 0x0D, 0x0A, 0x1A, 0x0A])
     /// No chunk seen so far is near this; a larger size means a damaged file, not a big chunk.
@@ -69,6 +74,7 @@ struct ZiPatchApplier {
         var files = OpenFiles(gap: gapFill)
         defer { files.closeAll() }
         var counts: [String: Int] = [:]
+        var position = Int64(Self.signature.count), reported: Int64 = 0
         // Each chunk in its own autorelease pool: FileHandle's reads hand back autoreleased
         // buffers, and a run that never suspends (download-ahead) would otherwise keep a
         // whole patch's worth of them alive until it does.
@@ -88,9 +94,15 @@ struct ZiPatchApplier {
             crc = payload.withUnsafeBytes { crc32(crc, $0.bindMemory(to: Bytef.self).baseAddress, uInt($0.count)) }
             guard UInt32(crc) == stored else { throw FFXIVPatchError.damaged("\(name) fails its checksum in a \(kind) chunk") }
             counts[kind, default: 0] += 1
+            position += Int64(12 + size)
+            if position - reported >= Self.progressStep, let progress {
+                reported = position
+                progress(position)
+            }
             switch kind {
                 case "EOF_":
                     try files.finish()   // the buffered writes, then the files' contents to the drive
+                    progress?(position)
                     return false
                 case "FHDR", "APLY": break
                 case "ADIR", "DELD":
@@ -389,7 +401,11 @@ struct FFXIVPatchRunner {
     enum Event: Equatable {
         case downloading(index: Int, count: Int, name: String, received: Int64, total: Int64)
         case checking(index: Int, count: Int, name: String)
+        /// The SHA-1 check has read this many bytes of the patch (once per hash block).
+        case checkProgress(index: Int, bytes: Int64)
         case applying(index: Int, count: Int, name: String)
+        /// Applying has read this many bytes of the patch (ZiPatchApplier.progress).
+        case applyProgress(index: Int, bytes: Int64)
         case applied(index: Int, count: Int, name: String, version: String?, timing: Timing)
         /// After a patch that completes a version: the repository's measured size and
         /// the list's figure for it (field 2), which should match.
@@ -464,7 +480,7 @@ struct FFXIVPatchRunner {
             progress(.checking(index: index, count: patches.count, name: name))
             var clock = Date()
             do {
-                try verify(patch, file: file)
+                try verify(patch, file: file, index: index)
             } catch FFXIVPatchError.hashMismatch {
                 // verify deleted it. Once, download it again from the start: a download cut
                 // off by the app being stopped has failed this way when resumed (2026-10-31).
@@ -478,7 +494,7 @@ struct FFXIVPatchRunner {
                 timing.downloadWrites += again.downloadWrites
                 progress(.checking(index: index, count: patches.count, name: name))
                 clock = Date()
-                try verify(patch, file: file)
+                try verify(patch, file: file, index: index)
             }
             timing.check = Date().timeIntervalSince(clock)
             try checkGrowth(for: patch, current: sizes[patch.repository] ?? 0)
@@ -489,7 +505,9 @@ struct FFXIVPatchRunner {
             }
             progress(.applying(index: index, count: patches.count, name: name))
             clock = Date()
-            try ZiPatchApplier(root: root(patch.repository), gapFill: gap ?? 0).apply(file)
+            let report = progress
+            try ZiPatchApplier(root: root(patch.repository), gapFill: gap ?? 0,
+                               progress: { report(.applyProgress(index: index, bytes: $0)) }).apply(file)
             timing.apply = Date().timeIntervalSince(clock)
             try FileManager.default.removeItem(at: file)
             if patch.setsVersion {
@@ -623,7 +641,7 @@ struct FFXIVPatchRunner {
     }
 
     /// The size, then the SHA-1 of every block; a mismatch deletes the file.
-    private func verify(_ patch: SquareEnixPatch, file: URL) throws {
+    private func verify(_ patch: SquareEnixPatch, file: URL, index: Int) throws {
         let name = patch.url.lastPathComponent
         guard fileSize(file) == patch.size else {
             try? FileManager.default.removeItem(at: file)   // wrong content either way: downloaded again
@@ -632,6 +650,7 @@ struct FFXIVPatchRunner {
         guard !patch.sha1.isEmpty else { return }   // boot lists carry no hashes
         let input = try FileHandle(forReadingFrom: file)
         defer { try? input.close() }
+        var checked: Int64 = 0
         for expected in patch.sha1 {
             var hasher = Insecure.SHA1()
             var left = patch.hashBlockSize
@@ -647,6 +666,8 @@ struct FFXIVPatchRunner {
                 try? FileManager.default.removeItem(at: file)
                 throw FFXIVPatchError.hashMismatch(name)
             }
+            checked = min(checked + Int64(patch.hashBlockSize), patch.size)
+            progress(.checkProgress(index: index, bytes: checked))
         }
     }
 
