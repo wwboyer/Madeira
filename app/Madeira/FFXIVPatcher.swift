@@ -50,6 +50,12 @@ struct ZiPatchApplier {
     /// Writes up to this many bytes apart are joined by reading the gap in between
     /// (0: only writes that touch). For a spinning disk (FFXIVPatchRunner.driveSpins).
     var gapFill = 0
+    /// Writes go straight to the drive instead of through the system's cache (F_NOCACHE),
+    /// for a spinning disk: there the cache let a backlog of scattered writes build up,
+    /// and a later write or the end-of-patch flush then waited 20-30 s or more for it
+    /// (2026-11-02), with no progress reported meanwhile. Now a write waits only for its
+    /// own bytes, at most `OpenFiles.maxPending`.
+    var uncached = false
     /// How far into the patch file applying has got, in bytes: every `progressStep`,
     /// at least once a `progressInterval` while chunks keep finishing, and once at the
     /// end. iOS ends a background task whose progress stops for about 30 s (its
@@ -78,7 +84,7 @@ struct ZiPatchApplier {
         defer { try? input.close() }
         let name = patch.lastPathComponent
         guard try input.read(upToCount: 12) == Self.signature else { throw FFXIVPatchError.notAPatch(name) }
-        var files = OpenFiles(gap: gapFill)
+        var files = OpenFiles(gap: gapFill, uncached: uncached)
         defer { files.closeAll() }
         var counts: [String: Int] = [:]
         var position = Int64(Self.signature.count), reported: Int64 = 0
@@ -320,8 +326,13 @@ private struct OpenFiles {
     /// it, with the bytes in between read from the file and written back unchanged. They
     /// are current, because every earlier write to them has been written out already.
     let gap: Int
+    /// F_NOCACHE on every file opened (ZiPatchApplier.uncached).
+    let uncached: Bool
 
-    init(gap: Int = 0) { self.gap = gap }
+    init(gap: Int = 0, uncached: Bool = false) {
+        self.gap = gap
+        self.uncached = uncached
+    }
 
     mutating func write<Bytes: DataProtocol>(_ bytes: Bytes, to url: URL, at offset: UInt64, create: Bool) throws {
         // Only scalars are read here: binding `pending` itself would add a second
@@ -379,6 +390,7 @@ private struct OpenFiles {
             FileManager.default.createFile(atPath: url.path, contents: nil)
         }
         let handle = try FileHandle(forUpdating: url)
+        if uncached { _ = fcntl(handle.fileDescriptor, F_NOCACHE, 1) }
         handles[url.path] = handle
         return handle
     }
@@ -422,6 +434,9 @@ struct FFXIVPatchRunner {
         case applying(index: Int, count: Int, name: String)
         /// Applying has read this many bytes of the patch (ZiPatchApplier.progress).
         case applyProgress(index: Int, bytes: Int64)
+        /// A size check has added up this many bytes of the `expected` (the list's installed
+        /// size): after applying the patch, or before a repository's first patch in a run.
+        case measuring(index: Int, bytes: Int64, expected: Int64, afterApplying: Bool)
         case applied(index: Int, count: Int, name: String, version: String?, timing: Timing)
         /// After a patch that completes a version: the repository's measured size and
         /// the list's figure for it (field 2), which should match.
@@ -452,6 +467,9 @@ struct FFXIVPatchRunner {
     /// The gap writes are joined across: nil decides by timing the drive (driveSpins),
     /// a number forces it (0: never; for tests).
     var gapFill: Int?
+    /// Writes straight to the drive (ZiPatchApplier.uncached): nil decides by timing the
+    /// drive (on for a spinning disk), a value forces it.
+    var uncachedWrites: Bool?
     static let spinningGap = 256 << 10
     /// A median random read slower than this means a spinning disk (flash: well under 1 ms).
     static let spinningMilliseconds = 2.5
@@ -463,12 +481,17 @@ struct FFXIVPatchRunner {
         let todo = patches.enumerated().filter { !done.contains(key($0.element)) }
         var sizes: [String: Int64] = [:]
         var gap = gapFill
+        var uncached = uncachedWrites
         var ahead: (offset: Int, file: URL, task: Task<Timing, Error>)?
         defer { ahead?.task.cancel() }
         for (step, (offset, patch)) in todo.enumerated() {
             try Task.checkCancellation()
             let index = offset + 1, name = patch.url.lastPathComponent
-            if sizes[patch.repository] == nil { sizes[patch.repository] = repositoryBytes(patch.repository) }
+            if sizes[patch.repository] == nil {
+                sizes[patch.repository] = repositoryBytes(patch.repository) {
+                    progress(.measuring(index: index, bytes: $0, expected: patch.installedSize, afterApplying: false))
+                }
+            }
             var file: URL
             var timing: Timing
             if let early = ahead, early.offset == offset {
@@ -514,15 +537,16 @@ struct FFXIVPatchRunner {
             }
             timing.check = Date().timeIntervalSince(clock)
             try checkGrowth(for: patch, current: sizes[patch.repository] ?? 0)
-            if gap == nil, let probe = Self.timeRandomReads(under: install.appendingPathComponent("game/sqpack")) {
+            if gap == nil || uncached == nil, let probe = Self.timeRandomReads(under: install.appendingPathComponent("game/sqpack")) {
                 let spins = probe.milliseconds > Self.spinningMilliseconds
                 progress(.drive(spins: spins, milliseconds: probe.milliseconds, file: probe.file))
-                gap = spins ? Self.spinningGap : 0
+                gap = gap ?? (spins ? Self.spinningGap : 0)
+                uncached = uncached ?? spins
             }
             progress(.applying(index: index, count: patches.count, name: name))
             clock = Date()
             let report = progress
-            try ZiPatchApplier(root: root(patch.repository), gapFill: gap ?? 0,
+            try ZiPatchApplier(root: root(patch.repository), gapFill: gap ?? 0, uncached: uncached ?? false,
                                progress: { report(.applyProgress(index: index, bytes: $0)) },
                                slow: { kind, end, seconds in
                                    report(.note(String(format: "slow chunk: %@ ending at byte %lld of %@ took %.1f s",
@@ -542,7 +566,9 @@ struct FFXIVPatchRunner {
                 // An integrity check, not a stop: an existing install may hold files no patch made.
                 // Every part of a split patch carries the size after its last part (base game
                 // D2024.10.25.0000.0000 to .0003.0000), so only a set's last part is compared.
-                let measured = repositoryBytes(patch.repository)
+                let measured = repositoryBytes(patch.repository) {
+                    progress(.measuring(index: index, bytes: $0, expected: patch.installedSize, afterApplying: true))
+                }
                 let next = patches.dropFirst(offset + 1).first { $0.repository == patch.repository }
                 if next?.installedSize != patch.installedSize {
                     progress(.measured(repository: patch.repository, bytes: measured, expected: patch.installedSize))
@@ -720,7 +746,9 @@ struct FFXIVPatchRunner {
 
     /// What the patch list's installed-size field counts: the repository's files,
     /// `.ver` and `.bck` aside (docs/FFXIV_PATCHING.md, "Game patch lists").
-    func repositoryBytes(_ repository: String) -> Int64 {
+    /// `progress`: the bytes added up so far, about every half second; on a spinning disk
+    /// a cold walk has taken 10 s (2026-11-02).
+    func repositoryBytes(_ repository: String, progress: ((Int64) -> Void)? = nil) -> Int64 {
         var folders: [URL] = []
         var loose: [URL] = []
         switch repository {
@@ -742,7 +770,17 @@ struct FFXIVPatchRunner {
                 if (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true { files.append(url) }
             }
         }
-        return files.filter { !["ver", "bck"].contains($0.pathExtension) }.reduce(0) { $0 + fileSize($1) }
+        var total: Int64 = 0
+        var reportedAt = DispatchTime.now().uptimeNanoseconds
+        for file in files where !["ver", "bck"].contains(file.pathExtension) {
+            total += fileSize(file)
+            let now = DispatchTime.now().uptimeNanoseconds
+            if let progress, now - reportedAt >= 500_000_000 {
+                reportedAt = now
+                progress(total)
+            }
+        }
+        return total
     }
 
     /// From the file system each time: URL resource values are cached on the URL.
