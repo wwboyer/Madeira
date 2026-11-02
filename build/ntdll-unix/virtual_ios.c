@@ -1145,6 +1145,10 @@ static void *ios_pool_warmer_thread( void *arg )
             if (cycle == 1 || (cycle % 30) == 0)
                 dprintf(2, "[pool-warmer] cycle=%u touched=%lu pages (head=0x%lx tail=0x%lx)\n",
                         cycle, (unsigned long)touched, (unsigned long)head, (unsigned long)tail);
+            {
+                extern void ios_wow_pressure_tick( unsigned cycle );
+                ios_wow_pressure_tick( cycle );   /* ml2030: idle 32-bit placeholders back under band pressure */
+            }
             /* task #35: report the three pool slots every ~30s on this existing
              * timer — see ios_slot_probe. Cheap (a few mach queries) and it is
              * the only signal that says whether the ceiling is doing its job. */
@@ -4448,6 +4452,8 @@ void ios_push_subfloor_window( unsigned long long low_base, unsigned long long r
 {
     static int disabled = -1;
 
+    /* ml2240: a window above 4GB (between it and the task's floor) is marked with bit 63, which
+     * no PE base carries, so FEX files it as a window, not as a JIT alias (IosJitAlias.cpp). */
     if (disabled < 0) disabled = (getenv( "MADEIRA_NO_SUBFLOOR_XQUERY" ) != NULL);
     if (disabled)
     {
@@ -4465,7 +4471,7 @@ void ios_push_subfloor_window( unsigned long long low_base, unsigned long long r
         if (!own_cb) return;   /* pushed later by the owner's catch-up loop */
         fprintf( stderr, "ml951: pushing sub-floor window guest %#llx+%#llx -> real %#llx to FEX (owner %p, own callback)\n",
                  low_base, size, real_base, owner );
-        own_cb( low_base, real_base, size );
+        own_cb( low_base >= 0x100000000ull ? low_base | (1ull << 63) : low_base, real_base, size );
         return;
     }
     void (*cb)(unsigned long long, unsigned long long, unsigned long long) =
@@ -4479,7 +4485,7 @@ void ios_push_subfloor_window( unsigned long long low_base, unsigned long long r
     if (owner && owner != ios_jit_alias_pushback_peb) return;
     fprintf( stderr, "ml951: pushing sub-floor window guest %#llx+%#llx -> real %#llx to FEX (owner %p)\n",
              low_base, size, real_base, owner );
-    cb( low_base, real_base, size );
+    cb( low_base >= 0x100000000ull ? low_base | (1ull << 63) : low_base, real_base, size );
 }
 
 /* unix_ios_push_jit_aliases handler. Called from PE-side ntdll's
@@ -10662,6 +10668,17 @@ static ULONG_PTR ios_wow_window_covering( const void *start, const void *end )
     return 0;
 }
 
+static int ios_wow_area_by_request(void)
+{
+    static int on = -1;
+    if (on < 0)
+    {
+        const char *e = getenv( "MADEIRA_WOW_AREA_BY_REQUEST" );
+        on = !(e && e[0] == '0');
+    }
+    return on;
+}
+
 /* map_reserved_area_inner: may a request with these limits take space in the
  * reserved area [start, end)? Not when the area is a window or placeholder and
  * the request is not constrained to the caller's own window. */
@@ -10672,6 +10689,18 @@ static int ios_wow_reserved_area_open( const void *start, const void *end, const
     if (!ios_wow_window_keep_enabled()) return 1;
     if (!ios_wow_window_count && !ios_wow_placeholder_count) return 1;
     if (!(wb = ios_wow_window_covering( start, end ))) return 1;
+    /* ml2220: adjacent windows' reserved areas merge (a slot carved from the holdback
+     * at 0x7200000000 joins slot 0's area below it), and the first window found in the
+     * merged area was slot 0's: a process in slot 1 was refused its own window, every
+     * allocation fell to a free-area map over the window's PROT_NONE reservation
+     * (errno 17) and the second 32-bit process of a session failed its TEB
+     * (device logs 108-110). The window that holds the request decides.
+     * env.MADEIRA_WOW_AREA_BY_REQUEST=0: the first window in the area, as before. */
+    if (ios_wow_area_by_request() && hi > lo)
+    {
+        ULONG_PTR own = ios_wow_window_covering( (void *)lo, (void *)(lo + 1) );
+        if (own && own < (ULONG_PTR)end && own + IOS_WOW_WINDOW_SIZE > (ULONG_PTR)start) wb = own;
+    }
     /* A request confined to this window is the window's own: ios_wow_translate_limits
      * puts a 32-bit process's bounds inside its window, and nothing else asks with
      * such bounds. map_view passes its end exclusive (limit_high + 1), which is the
@@ -15416,6 +15445,113 @@ static int ios_wow_window_teardown( ULONG_PTR base, void *dead_peb, unsigned gua
         }
     }
     return 1;
+}
+
+/* ml2030: free bytes in [lo, hi), the holes between regions.  Stops once it has
+ * seen `enough`, so a window with room costs a few calls, not a full walk. */
+static unsigned long long ios_wow_band_free_bytes( mach_vm_address_t lo, mach_vm_address_t hi,
+                                                   unsigned long long enough )
+{
+    mach_vm_address_t addr = lo;
+    unsigned long long free_total = 0;
+
+    while (addr < hi && free_total < enough)
+    {
+        mach_vm_address_t q = addr;
+        mach_vm_size_t size = 0;
+        vm_region_basic_info_data_64_t info;
+        mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64;
+        mach_port_t obj = MACH_PORT_NULL;
+
+        if (mach_vm_region( mach_task_self(), &q, &size, VM_REGION_BASIC_INFO_64,
+                            (vm_region_info_t)&info, &cnt, &obj ) != KERN_SUCCESS || q >= hi)
+        {
+            free_total += hi - addr;   /* nothing mapped from here to the end */
+            break;
+        }
+        if (q > addr) free_total += q - addr;
+        addr = q + size;
+    }
+    return free_total;
+}
+
+/* ml2030: under host address pressure, give idle guest-window placeholders back.
+ *
+ * A held placeholder (MADEIRA_WOW_HOLD_WINDOWS) keeps 4 GB of the band for a
+ * 32-bit program the session may start later, and a window whose process has
+ * exited keeps its placeholder until the next 32-bit process boots.  Both are
+ * the right trade while the band has room.  Device logs 2026-10-28 (a 64-bit
+ * game with a 32-bit program in its folder) show the other case: the band's
+ * free space fell from 12 GB to under 200 MB in the first minutes and stayed
+ * there, with the unadopted placeholder (or, in the second log, the window of a
+ * 32-bit helper that ran for a second) as the one large idle range.  Metal's
+ * buffer allocations and then Wine's own maps failed with ENOMEM, a launcher
+ * helper crashed on the failed allocation and the game was closed with it.
+ *
+ * So, from the warmer's ~2 s cycle, every 5th cycle and only while a
+ * placeholder exists: when the band's free space is under the threshold, tear
+ * down exited windows whose threads are gone (the same reclaim a booting 32-bit
+ * process runs) and hand every unadopted placeholder back to the kernel.  A
+ * 32-bit program started after that takes a fresh slot if the band has one.
+ * MADEIRA_WOW_PRESSURE_RELEASE_MB=0 keeps the placeholders. */
+void ios_wow_pressure_tick( unsigned cycle )
+{
+    static long threshold_mb = -1;
+    unsigned long long free_bytes;
+    ULONG_PTR floor, ceil;
+    unsigned released = 0;
+
+    if (threshold_mb < 0)
+    {
+        const char *env = getenv( "MADEIRA_WOW_PRESSURE_RELEASE_MB" );   /* MB: when the 32-bit band has less free address space than this, idle 32-bit window placeholders are handed back (default 256); 0: never */
+        threshold_mb = (env && *env) ? strtol( env, NULL, 10 ) : 256;
+        if (threshold_mb < 0) threshold_mb = 0;
+    }
+    if (!threshold_mb || !ios_wow_placeholder_count || (cycle % 5)) return;
+
+    ios_wow_band( &floor, &ceil );
+    if (ceil <= floor) return;
+    free_bytes = ios_wow_band_free_bytes( floor, ceil, (unsigned long long)threshold_mb << 20 );
+    if (free_bytes >= ((unsigned long long)threshold_mb << 20)) return;
+
+    ios_wow_reclaim_dead_windows();
+
+    for (;;)
+    {
+        ULONG_PTR base = 0;
+        sigset_t sigset;
+        unsigned i;
+
+        pthread_mutex_lock( &ios_wow_mutex );
+        for (i = 0; i < ios_wow_placeholder_count; i++)
+        {
+            if (ios_wow_placeholders[i].adopted || ios_wow_slot_at_base( ios_wow_placeholders[i].base ))
+                continue;
+            base = ios_wow_placeholders[i].base;
+            ios_wow_placeholders[i] = ios_wow_placeholders[--ios_wow_placeholder_count];
+            memset( &ios_wow_placeholders[ios_wow_placeholder_count], 0, sizeof(ios_wow_placeholders[0]) );
+            break;
+        }
+        pthread_mutex_unlock( &ios_wow_mutex );
+        if (!base) break;
+
+        /* No lock is nested: a 32-bit process booting meanwhile finds no
+         * placeholder here and a range that is still mapped, so it moves on. */
+        server_enter_uninterrupted_section( &virtual_mutex, &sigset );
+        remove_reserved_area( (void *)base, IOS_WOW_WINDOW_SIZE );
+        server_leave_uninterrupted_section( &virtual_mutex, &sigset );
+        released++;
+        dprintf( 2, "[wow-window] ml2030 band free %llu MB (under %ld MB): idle placeholder B=%p..%p "
+                    "handed back to the kernel (MADEIRA_WOW_PRESSURE_RELEASE_MB=0 keeps it)\n",
+                 free_bytes >> 20, threshold_mb, (void *)base, (void *)(base + IOS_WOW_WINDOW_SIZE) );
+    }
+    if (!released)
+    {
+        static unsigned said;
+        if (said++ < 4)
+            dprintf( 2, "[wow-window] ml2030 band free %llu MB (under %ld MB) but every placeholder "
+                        "is in use\n", free_bytes >> 20, threshold_mb );
+    }
 }
 #endif  /* WINE_IOS */
 
@@ -22455,13 +22591,29 @@ static void ios_swap_config( void )
         ios_swap_resv_max = ios_swap_env_size( "MADEIRA_SWAP_RESERVE_MAX_MB", 256u << 20, 20, 1u << 20, (size_t)1 << 32 );
 }
 
+static int ios_swap_donor_only;   /* ml2200: the tier maps the donor pool only, no file */
 static void ios_swap_init( void )
 {
     static int done;
-    const char *f, *mb;
+    const char *f, *mb, *d;
     if (done) return;
     done = 1;
     f = getenv( "MADEIRA_SWAP_FILE" ); mb = getenv( "MADEIRA_SWAP_MB" );
+    if ((!f || !*f || !mb) && (d = getenv( "MADEIRA_SWAP_DONOR_ONLY" )) && d[0] == '1')
+    {
+        /* ml2200: donor-only (the app sets it for donor-pool-mb without swap-mb). No file:
+         * the cap and the offset space stay 0, so every file take is refused and the tier
+         * maps donated RAM and nothing else; what the pool cannot cover stays anonymous.
+         * /dev/null stands in for the file so the tier's "on" checks hold; nothing is
+         * ever mapped from it or written to it. */
+        ios_swap_fd = open( "/dev/null", O_RDWR | O_CLOEXEC );
+        if (ios_swap_fd < 0) { dprintf( 2, "[swap] ml2200 cannot open /dev/null (errno %d): tier OFF\n", errno ); return; }
+        ios_swap_donor_only = 1;
+        ios_swap_config();
+        ios_swap_cap = ios_swap_logical = 0;
+        dprintf( 2, "[swap] ml2200 donor-only tier ON: the donor pool backs guest memory, no swap file (madeira.cfg donor-only = 0 turns it off)\n" );
+        return;
+    }
     if (!f || !*f || !mb) return;
     ios_swap_cap = (uint64_t)strtoull( mb, NULL, 10 ) << 20;
     if (ios_swap_cap < (64ull << 20)) return;
@@ -23316,7 +23468,7 @@ static int ios_swap_map( void *base, size_t size, int unix_prot )
         goto mapped;
     }
     /* ml1257: in broad the cap is the disk the sparse file really occupies */
-    if (ios_swap_broad && ios_swap_disk_used() >= ios_swap_cap) { ios_swap_disk_refused++; ios_swap_refused++; return IOS_SW_REFUSED; }
+    if (ios_swap_broad && !ios_swap_donor_only && ios_swap_disk_used() >= ios_swap_cap) { ios_swap_disk_refused++; ios_swap_refused++; return IOS_SW_REFUSED; }
     wow = ios_wow_window_covering( hs, he ) != 0;   /* ml2021: a 32-bit program's range */
     if (wow && ios_swap_wow64_policy() == 2) { ios_swap_wow_kept += len; return IOS_SW_WOW64; }
     x64 = ios_swap_x64_policy();
@@ -25361,6 +25513,8 @@ static int ios_shared_section_private(void)
  * headers are read fault-safe (mach_vm_read_overwrite): it may have made its
  * header page PAGE_NOACCESS. virtual_mutex must be held.
  */
+extern int ios_subfloor_high_ok( unsigned long long base, unsigned long long size );   /* ml2240, signal_arm64_ios.c */
+
 static BOOL ios_subfloor_window_held( ULONG_PTR low, ULONG_PTR real )
 {
     extern int ios_subfloor_enum( int idx, unsigned long long *low, unsigned long long *real,
@@ -25952,7 +26106,10 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
      * base, and the image's own low absolutes are serviced by the ml938
      * sub-floor window registered just below. Only 64-bit images outside a WoW
      * guest window: a 32-bit image in a window is at its own guest address. */
-    else if (!image_info->map_addr && image_info->base && image_info->base < 0x100000000ull &&
+    /* ml2240: or a base between 4GB and the task's floor, outside the map too
+     * (ios_subfloor_high_ok, MADEIRA_SUBFLOOR_HIGH=0 restores the 4GB limit). */
+    else if (!image_info->map_addr && image_info->base &&
+             (image_info->base < 0x100000000ull || ios_subfloor_high_ok( image_info->base, total_size )) &&
              (ULONG_PTR)ptr != image_info->base &&
              (nt->FileHeader.Characteristics & IMAGE_FILE_RELOCS_STRIPPED) &&
              nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC && !ios_wow_in_window( ptr ))
@@ -25976,7 +26133,23 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
     /* A PE32 image inside a WoW64 guest window lives at B + its guest base; the
      * session-wide sub-floor table would redirect one 32-bit process's accesses
      * into another's copy.  Outside a window this is the upstream rule. */
-    if (image_info->base && image_info->base < 0x100000000ull
+    /* ml2240: a 64-bit RELOCS_STRIPPED image based between 4GB and the task's floor
+     * gets its window too (it runs at its preferred-base addresses, header rewritten
+     * by ml1195 above); the low-allocation and narrowed-alias notes stay sub-4GB. */
+    if (image_info->base && image_info->base >= 0x100000000ull && (ULONG_PTR)ptr != image_info->base &&
+        nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC &&
+        (nt->FileHeader.Characteristics & IMAGE_FILE_RELOCS_STRIPPED) &&
+        ios_subfloor_high_ok( image_info->base, total_size ))
+    {
+        extern void ios_register_subfloor_image( unsigned long long pref_base,
+                                                 unsigned long long size,
+                                                 unsigned long long real_base, void *owner );
+        fprintf( stderr, "[subfloor] ml2240 image based at %#llx (outside the task's map, above 4GB) runs at %p "
+                 "through a window\n", (unsigned long long)image_info->base, ptr );
+        ios_register_subfloor_image( (unsigned long long)image_info->base, (unsigned long long)total_size,
+                                     (unsigned long long)(uintptr_t)ptr, ios_jit_current_peb() );
+    }
+    else if (image_info->base && image_info->base < 0x100000000ull
         && (nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC || !ios_wow_in_window( ptr )))
     {
         extern void ios_register_subfloor_image( unsigned long long pref_base,

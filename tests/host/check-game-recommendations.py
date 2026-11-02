@@ -113,8 +113,36 @@ assert titles_src.count('SteamTitle(') == len(MERGED)
 assert 'if last == "big-picture.bat" { return steamBigPicture }' in lists_src
 assert 'static var bigPictureEntry: LibraryEntry' in library and 'relativePath: "big-picture.bat"' in library \
     and 'entry.bigPicture = true' in library and 'entry.launchMode = "desktop"' in library, 'the library offers the Big Picture entry (desktop-mode batch)'
-assert 'if bigPicture == true { Self.writeBigPictureBatch() }' in library and '-bigpicture -no-cef-sandbox -cef-disable-gpu' in library, \
-    'the batch (services.exe, then steam.exe -bigpicture) is written at every launch'
+assert 'if bigPicture == true { Self.writeBigPictureBatch() }' in library \
+    and '-bigpicture -no-cef-sandbox" + (gpu ? "" : " -cef-disable-gpu") + " -console -nocrashmonitor"' in library \
+    and 'MadeiraConfig.flag("MADEIRA_BIG_PICTURE_GPU", fallback: false)' in library, \
+    'the batch (services.exe, then steam.exe -bigpicture) is written at every launch; software drawing unless env.MADEIRA_BIG_PICTURE_GPU = 1'
+# ml2210 (version 3): the 32-bit web helper's crash reporter may start, no Social Club pool layout, and an
+# installed 32-bit client is kept (no bootstrap update) unless env.MADEIRA_BIG_PICTURE_PIN = 0.
+# ml2230 (version 4, logs 111-112): CEF's verbose log is off. Version 5 (logs 113-114): V8 is interpreted again
+# (version 4's MADEIRA_JITLESS = 0 froze the UI: every store to its pool-aliased code space was emulated).
+bp = presets['steam-big-picture']
+assert bp['version'] == 6 and 'env.MADEIRA_STEAM_ALLOW_CRASHPAD = 1' in bp['lines'] and 'env.MADEIRA_SRW_HANG_KILL_S = 40' in bp['lines'] \
+    and not any(l.startswith('env.MADEIRA_JITLESS') for l in bp['lines']) and 'env.MADEIRA_CEF_VERBOSE = 0' in bp['lines'] \
+    and not any(l.startswith('env.MADEIRA_SC_PA_POOLS') for l in bp['lines']), bp
+# ml2230: Big Picture's libraryfolders.vdf (config/ and steamapps/) gets Madeira's Steam library and the drives'
+# libraries beside its own entries, before each start (env.MADEIRA_BIG_PICTURE_LIBRARIES = 0 leaves them alone).
+assert 'listMadeiraLibraries(in: folder)' in library \
+    and 'MadeiraConfig.flag("MADEIRA_BIG_PICTURE_LIBRARIES", fallback: true)' in library \
+    and 'var libraries = [own]' in library \
+    and 'for sub in ["config", "steamapps"]' in library \
+    and 'try ExternalSteamLibraries.add(paths: libraries, to: existing)' in library, \
+    'Big Picture lists the games Madeira installed'
+# ml2240: every library Madeira's Steam list reads, including the other C: libraries the Dock client's
+# libraryfolders.vdf names (env.MADEIRA_BIG_PICTURE_DOCK_LIBRARIES = 0: its own folder and the drives only).
+dock = (app / 'MadeiraDock.swift').read_text()
+assert 'MadeiraConfig.flag("MADEIRA_BIG_PICTURE_DOCK_LIBRARIES", fallback: true)' in library \
+    and '? MadeiraDock.steamLibraries(drive: MadeiraDock.drive)' in library \
+    and 'static func steamLibraries(drive: URL) -> [String] {' in dock \
+    and 'let libraries = steamLibraries(drive: drive)' in dock, 'Big Picture reads the Dock\'s library list'
+assert 'MadeiraConfig.flag("MADEIRA_BIG_PICTURE_PIN", fallback: true)' in library \
+    and 'fm.fileExists(atPath: "\\(folder.unix)/bin/cef/cef.win7/steamwebhelper.exe")' in library \
+    and '(pinned ? " -nobootstrapperupdate -skipinitialbootstrap" : "")' in library
 # Big Picture is compiled out of every build without the MADEIRA_BIG_PICTURE_UI condition (no IPA build sets it).
 bp_button = library[library.index('#if MADEIRA_BIG_PICTURE_UI\n            if LibraryEntry.steamClientInstalled {'):]
 bp_button = bp_button[:bp_button.index('#endif')]
@@ -264,8 +292,19 @@ assert 'if size != GameRecommendation.screen720 { entry.resolution = size }\n   
 gta = presets['gta5e-steam']
 assert 'env.MADEIRA_CHILD_ARGS = PlayGTAV.exe -nobattleye' in gta['lines']
 assert 'env.MADEIRA_DOCK_KEEP_ALIVE = Launcher.exe;GTA5_Enhanced.exe' in gta['lines']
-assert 'semaphoreFastPath: true, fpsMode: 4' in gta['switches'] and 'nvidia: true' in gta['switches']
-assert 'env.MADEIRA_FASTSYNC_SEM = 1' in presets['gta5e-other']['lines']
+# Version 10 (log 107): 30 FPS, the menus at 40 spent the power budget before iOS clamped the cores.
+assert 'semaphoreFastPath: true, fpsMode: 3' in gta['switches'] and 'nvidia: true' in gta['switches']
+# Outside Steam version 9 (an Epic copy): the Steam list's lines without its Dock lines, plus SteamDeck and the
+# [ec-hook] reporter off, and its switches with the copy's 1280x720; no fastsync semaphore cells.
+gta_other = presets['gta5e-other']
+dock_lines = {'env.MADEIRA_DOCK_GAME_SCM = 1', 'env.MADEIRA_DOCK_KEEP_ALIVE = Launcher.exe;GTA5_Enhanced.exe'}
+def settings(lines):
+    return {l for l in lines if not l.startswith('#')}
+assert settings(gta_other['lines']) == (settings(gta['lines']) - dock_lines) | {'env.SteamDeck = 1', 'env.MADEIRA_EC_HOOK_TRACE = 0'}, \
+    sorted(settings(gta_other['lines']) ^ settings(gta['lines']))
+assert 'env.MADEIRA_FASTSYNC_SEM = 1' not in gta_other['lines']
+assert gta_other['switches'] == gta['switches'].replace('display: "fit"', 'resolution: "1280x720", display: "fit"'), \
+    gta_other['switches']
 # Version 2 of both GTA lists (2026-10-12): the orphan-lock reaper's stamped mode, as RDR2 and
 # Horizon Zero Dawn have. The default mode released a busy SocialClubHelper.exe lock at Story Mode.
 for ident in ('gta5e-steam', 'gta5e-other', 'rdr2-steam', 'rdr2-other', 'horizon-zero-dawn'):
@@ -275,17 +314,24 @@ for ident in ('gta5e-steam', 'gta5e-other', 'rdr2-steam', 'rdr2-other', 'horizon
 # Version 5 / 4: compiled pipelines kept in archives of our own (pso-archive).
 # Version 6 / 5 (log 97, an 8 GB phone killed at its limit with Metal at 2.1 GB): shared argument-ring
 # chunks, and under 12 GB of RAM the video budget's trim starts 3584 MB below the limit.
-assert presets['gta5e-steam']['version'] == 7 and presets['gta5e-other']['version'] == 6, \
+# Versions 9 / 8 (logs 103-106): the small-device memory guard; version 8 / 7's semaphore cells and lean
+# diagnostics are gone again (the game's loading stalled with them).
+assert presets['gta5e-steam']['version'] == 10 and presets['gta5e-other']['version'] == 9, \
     (presets['gta5e-steam']['version'], presets['gta5e-other']['version'])
 for ident in ('gta5e-steam', 'gta5e-other'):
     assert 'pso-async = 1' in presets[ident]['lines'], ident
     assert 'pso-archive = 1' in presets[ident]['lines'], ident
     assert 'ring-share = 1' in presets[ident]['lines'], ident
     assert 'smallRAMConfig: gta5EnhancedSmallRAMLines' in presets[ident]['switches'], ident
-    assert not any(l.startswith('vram-trim-mb') for l in presets[ident]['lines']), ident   # small devices only
+    assert not any(l.startswith('vram-trim-mb') or l.startswith('donor-pool-guard')
+                   for l in presets[ident]['lines']), ident   # small devices only
+    assert 'env.MADEIRA_LEAN_DIAG = 1' not in presets[ident]['lines'], ident
+assert 'env.MADEIRA_FASTSYNC_SEM = 1' not in gta['lines']
 # Versions 7/6 (log 98): from 3584 the budget fell below the Metal usage the game could not shed and it
 # stopped streaming; the trim starts 2560 MB below the limit.
-assert 'static let gta5EnhancedSmallRAMLines = "vram-trim-mb = 2560"' in lists_src
+# Versions 9/8 (log 103, the phone out of RAM): critical pressure sends the 64-bit title's new memory to
+# the swap file, not more donated RAM.
+assert 'static let gta5EnhancedSmallRAMLines = "vram-trim-mb = 2560\\ndonor-pool-guard = 1"' in lists_src
 for ident in ('rdr2-steam', 'rdr2-other', 'gta5e-steam'):
     assert 'env.MADEIRA_SPAWN_BLOCK = RockstarErrorHandler;.be\\vc_redist' in presets[ident]['lines'], ident
 assert 'resolution: "1280x720"' in presets['ghost-of-tsushima']['switches'] and 'avx: true' in presets['ghost-of-tsushima']['switches']
