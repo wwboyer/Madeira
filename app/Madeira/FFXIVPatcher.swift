@@ -89,26 +89,26 @@ struct ZiPatchApplier {
             guard UInt32(crc) == stored else { throw FFXIVPatchError.damaged("\(name) fails its checksum in a \(kind) chunk") }
             counts[kind, default: 0] += 1
             switch kind {
-            case "EOF_":
-                try files.finish()   // the buffered writes, then the files' contents to the drive
-                return false
-            case "FHDR", "APLY": break
-            case "ADIR", "DELD":
-                let length = Int(payload.be32(0))
-                guard payload.count >= 4 + length else { throw FFXIVPatchError.damaged("\(name) has a short \(kind) chunk") }
-                let folder = try path(payload.cString(at: 4, length: length))
-                if kind == "ADIR" {
-                    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-                } else if (try? FileManager.default.contentsOfDirectory(atPath: folder.path))?.isEmpty == true {
-                    try FileManager.default.removeItem(at: folder)
-                }
-            case "SQPK":
-                guard payload.count >= 5 else { throw FFXIVPatchError.damaged("\(name) has an empty SQPK chunk") }
-                let command = Character(UnicodeScalar(payload[payload.startIndex + 4]))
-                let label = try sqpk(command, Data(payload.dropFirst(5)), files: &files)
-                counts["SQPK:" + label, default: 0] += 1
-            default:
-                throw FFXIVPatchError.unsupported("a \(kind) chunk in \(name)")
+                case "EOF_":
+                    try files.finish()   // the buffered writes, then the files' contents to the drive
+                    return false
+                case "FHDR", "APLY": break
+                case "ADIR", "DELD":
+                    let length = Int(payload.be32(0))
+                    guard payload.count >= 4 + length else { throw FFXIVPatchError.damaged("\(name) has a short \(kind) chunk") }
+                    let folder = try path(payload.cString(at: 4, length: length))
+                    if kind == "ADIR" {
+                        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                    } else if (try? FileManager.default.contentsOfDirectory(atPath: folder.path))?.isEmpty == true {
+                        try FileManager.default.removeItem(at: folder)
+                    }
+                case "SQPK":
+                    guard payload.count >= 5 else { throw FFXIVPatchError.damaged("\(name) has an empty SQPK chunk") }
+                    let command = Character(UnicodeScalar(payload[payload.startIndex + 4]))
+                    let label = try sqpk(command, Data(payload.dropFirst(5)), files: &files)
+                    counts["SQPK:" + label, default: 0] += 1
+                default:
+                    throw FFXIVPatchError.unsupported("a \(kind) chunk in \(name)")
             }
             return true
         }) {}

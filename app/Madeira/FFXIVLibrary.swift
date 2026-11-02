@@ -152,7 +152,7 @@ import SwiftUI
         if let walker = files.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey]) {
             while let url = walker.nextObject() as? URL {
                 if (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
-                    throw InstallError("\(relative.replacingOccurrences(of: "/", with: " › ")) already has files. Add that copy with + instead, or move it away first.")
+                    throw InstallError("\(relative.replacingOccurrences(of: "/", with: " › ")) already has files. Add that copy with + instead, or delete it first.")
                 }
             }
         }
@@ -457,7 +457,7 @@ struct FFXIVInstallSheet: View {
                         .replacingOccurrences(of: "External/", with: "").replacingOccurrences(of: "/", with: " › "))
                     if let free { LabeledContent("Free there", value: ffxivBytes(free)) }
                 } footer: {
-                    Text("Madeira first downloads the game's boot programs (about 22 MB). Then sign in from the game's page, and Madeira lists and downloads the rest, which needs a FINAL FANTASY XIV license on your account.")
+                    Text("Madeira first downloads the game's boot programs (about 22 MB). Then sign in to your Square Enix account from the library entry by pressing Play to download the rest of the game.")
                 }
                 if let error = ffxiv.error {
                     Section { Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red) }
@@ -581,8 +581,8 @@ struct FFXIVUpdateSection: View {
 
     private func footer(_ update: SquareEnixUpdate) -> String {
         var text = update.stage == .boot
-            ? "The game's boot programs need an update. After it, press Play again to sign in."
-            : "Square Enix listed these patches when you signed in. After the update, press Play again."
+            ? "The game's boot programs need an update. After updating, press Play to sign in."
+            : "A new game update was found. After updating, press Play to sign in."
         if let space, space.free < space.needed { text += " This device does not have enough free space to install the update. Free up some space and try again." }
         return text
     }
@@ -601,16 +601,16 @@ struct FFXIVUpdateSection: View {
     private func aheadNote(_ update: SquareEnixUpdate) -> String {
         let need = ffxivBytes(aheadNeed(update))
         if onExternalDrive {
-            return "Recommended for a game on an external drive: the next patch downloads to this \(device)'s internal storage the current patch is applied." +
-                "This requires \(need) free on this \(device), and adds additional wear to the internal storage."
+            return "Recommended for an external drive. The next patch file downloads to this \(device)'s internal storage while the current patch file is installed to the external drive. " +
+                "This requires \(need) of free space on this \(device) and adds additional wear to the internal storage."
         }
-        return "The next patch downloads while one is applied. Needs about \(need) free on this \(device)."
+        return "The next patch file downloads while the current patch is installed. This requires \(need) of free space on this \(device)."
     }
 
     /// When this device has too little room: download-ahead then mostly stands aside.
     private func aheadWarning(_ update: SquareEnixUpdate) -> String? {
         guard let phoneFree, phoneFree < aheadNeed(update) else { return nil }
         return "This \(device) has \(ffxivBytes(phoneFree)) free, so " +
-            (onExternalDrive ? "many patches will download to the drive instead." : "patches will mostly download one at a time.")
+            (onExternalDrive ? "larger patches will download to the drive instead." : "larger patches will download one at a time.")
     }
 }

@@ -172,7 +172,7 @@ struct SquareEnixSignInSheet: View {
                         .focused($focus, equals: .oneTime)
                 } footer: {
                     Text((license == .mac ? "Mac license" : "Windows license") +
-                         (entry.squareEnixFreeTrial == true ? ", free trial account." : ".") +
+                         (entry.squareEnixFreeTrial == true ? " (free trial account)." : ".") +
                          (entry.squareEnixRemember == true ? " Your ID and password are kept in the Keychain after signing in." : ""))
                 }
                 .disabled(busy)
