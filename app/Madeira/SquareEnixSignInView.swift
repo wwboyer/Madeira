@@ -13,10 +13,10 @@ import SwiftUI
 // sign-in itself is SquareEnixSignIn.swift.
 
 enum SquareEnixGame {
-    /// The installation an entry starts, or nil for any other entry. Steam and
-    /// Epic games and the Desktop start their own way and are never one.
+    /// The installation an entry starts, or nil for any other entry. Steam, Epic
+    /// and itch.io games and the Desktop start their own way and are never one.
     static func install(for entry: LibraryEntry) -> FFXIVInstall? {
-        guard entry.desktop != true, entry.steamAppID == nil, entry.epicAppName == nil else { return nil }
+        guard entry.desktop != true, entry.steamAppID == nil, entry.epicAppName == nil, entry.itchGameID == nil else { return nil }
         return FFXIVInstall(program: LibraryModel.drive.appendingPathComponent(entry.relativePath))
     }
 

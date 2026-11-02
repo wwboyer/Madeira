@@ -46,7 +46,7 @@ import SwiftUI
     /// Whether an entry names one of the game's own programs (FFXIVInstall.programs),
     /// from its path alone: views call this, so it never touches the disk.
     static func isFFXIV(_ entry: LibraryEntry) -> Bool {
-        guard entry.desktop != true, entry.steamAppID == nil, entry.epicAppName == nil else { return false }
+        guard entry.desktop != true, entry.steamAppID == nil, entry.epicAppName == nil, entry.itchGameID == nil else { return false }
         let tail = entry.relativePath.lowercased().split(separator: "/").suffix(2).joined(separator: "/")
         return FFXIVInstall.programs.contains(tail)
     }
@@ -167,7 +167,7 @@ import SwiftUI
         let (body, reply) = try await URLSession.shared.data(for: request)
         let status = (reply as? HTTPURLResponse)?.statusCode ?? 0
         guard case .update(let patches) = SquareEnixProtocol.bootCheck(status: status, body: body), !patches.isEmpty else {
-            throw InstallError("Square Enix's servers didn't offer the boot programs (HTTP \(status)). Try again later.")
+            throw InstallError("Unable to download boot files from Square Enix's servers (HTTP \(status)). Try again later.")
         }
         return patches
     }
@@ -457,7 +457,7 @@ struct FFXIVInstallSheet: View {
                         .replacingOccurrences(of: "External/", with: "").replacingOccurrences(of: "/", with: " › "))
                     if let free { LabeledContent("Free there", value: ffxivBytes(free)) }
                 } footer: {
-                    Text("Madeira first downloads the game's boot programs (about 22 MB). Then sign in from the game's page, and Madeira lists and downloads the rest, which needs a FINAL FANTASY XIV license on your account: about 152 GB to download and 130 GB installed with every expansion (October 2026). Downloads continue while Madeira is open, and in the background where iOS allows it. Drives are added in Settings › External drives.")
+                    Text("Madeira first downloads the game's boot programs (about 22 MB). Then sign in from the game's page, and Madeira lists and downloads the rest, which needs a FINAL FANTASY XIV license on your account.")
                 }
                 if let error = ffxiv.error {
                     Section { Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red) }
@@ -583,7 +583,7 @@ struct FFXIVUpdateSection: View {
         var text = update.stage == .boot
             ? "The game's boot programs need an update. After it, press Play again to sign in."
             : "Square Enix listed these patches when you signed in. After the update, press Play again."
-        if let space, space.free < space.needed { text += " Free up space first: this update needs more than the device has." }
+        if let space, space.free < space.needed { text += " This device does not have enough free space to install the update. Free up some space and try again." }
         return text
     }
 
@@ -601,12 +601,10 @@ struct FFXIVUpdateSection: View {
     private func aheadNote(_ update: SquareEnixUpdate) -> String {
         let need = ffxivBytes(aheadNeed(update))
         if onExternalDrive {
-            return "Recommended for a game on an external drive: the next patch downloads to this \(device) while one is applied," +
-                " so downloads don't use the drive's connection, which is usually its slowest part. Needs about \(need) free on" +
-                " this \(device), and writes every patch to its storage once more, which adds wear to it."
+            return "Recommended for a game on an external drive: the next patch downloads to this \(device)'s internal storage the current patch is applied." +
+                "This requires \(need) free on this \(device), and adds additional wear to the internal storage."
         }
-        return "The next patch downloads while one is applied. Needs about \(need) free on this \(device); patches are" +
-            " written to it either way, so this adds no wear."
+        return "The next patch downloads while one is applied. Needs about \(need) free on this \(device)."
     }
 
     /// When this device has too little room: download-ahead then mostly stands aside.
