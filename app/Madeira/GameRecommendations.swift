@@ -34,6 +34,8 @@
 //    - The Steam titles of `steamTitles` (merged 2026-10-26): their App IDs,
 //      their folders under steamapps\common and their own programs; a
 //      program marked Steam-only names the game only inside a Steam library.
+//    - FINAL FANTASY XIV by its boot, launcher or game program, wherever it
+//      was installed (the official folder, Madeira's own install, a drive).
 //    - Any other game, and the Desktop, gets the standard list (owner's
 //      decisions, 2026-10-12; GameRecommendationsApply.swift).
 //
@@ -1086,6 +1088,26 @@ enum GameRecommendations {
         """,
         avx: true, nvidia: false, wineVCRT: false, display: "fit")
 
+    /// FINAL FANTASY XIV Online: the settings of the working library entry on an
+    /// iPhone 17 Pro Max (2026-11-02), with two changes. It starts in the Wine desktop,
+    /// so every window the boot program and the launcher open shows; a Windows license
+    /// starts there anyway, because its boot program restarts itself (LibraryEntry.runsInDesktop).
+    /// Player 1 is there from the first frame, so the game sees the controller when
+    /// it starts. The rest as tested: player 1 is a DualSense, FEX checks for
+    /// self-modifying code by tracking writes to code pages (mtrack), 30 FPS at 1366x768.
+    static let finalFantasyXIV = GameRecommendation(
+        id: "final-fantasy-xiv", title: "FINAL FANTASY XIV Online", version: 1,
+        config: """
+        # Madeira's recommended settings for FINAL FANTASY XIV Online.
+        # Reset to Recommended, at the bottom of the game's settings, brings them back.
+        # Player 1 is there from the first frame, as a DualSense.
+        env.MADEIRA_PAD_EARLY_SLOT = 1
+        env.MADEIRA_PAD_MODE = dualsense
+        env.FEX_SMCCHECKS = mtrack
+        env.MADEIRA_EC_HOOK_TRACE = 0
+        """,
+        fpsMode: 3, resolution: "1366x768", display: "fit", launchMode: "desktop")
+
     /// Every other game, and the Desktop (owner's decisions, 2026-10-12): most games
     /// the owner tried outside these lists closed at start until the [ec-hook]
     /// reporter was off. It reads code a game's protection rewrites at run time
@@ -1237,7 +1259,8 @@ enum GameRecommendations {
     static let all = [rdr2Steam, rdr2Other, gta5EnhancedSteam, gta5EnhancedOther, gta5LegacySteam, gta5LegacyOther, gta4Steam,
                       ghostOfTsushima, godOfWar, horizonZeroDawn, horizonForbiddenWest, ratchetClankRiftApart, crysisRemastered,
                       crysis2Remastered, crysis3Remastered, rockstarLauncher, rockstarLauncherSetup, steamBigPicture,
-                      darkSoulsRemastered, darkSoulsIII, falloutNewVegas, fallout3, blackOps1, blackOps2, borderlands2, standard]
+                      darkSoulsRemastered, darkSoulsIII, falloutNewVegas, fallout3, blackOps1, blackOps2, borderlands2, finalFantasyXIV,
+                      standard]
         + steamTitles.map(\.list)
 
     // MARK: Recognising a game
@@ -1359,6 +1382,9 @@ enum GameRecommendations {
             return rockstarLauncher
         case "rockstar-games-launcher.exe":
             return rockstarLauncherSetup
+        case "ffxivboot.exe", "ffxivboot64.exe", "ffxivlauncher64.exe", "ffxiv_dx11.exe":
+            // FINAL FANTASY XIV's programs (FFXIVInstall.programs): a library entry names the boot program.
+            return finalFantasyXIV
         default:
             return steamTitles.first { $0.programs.contains(last) || (inSteam && $0.steamPrograms.contains(last)) }?.list
         }

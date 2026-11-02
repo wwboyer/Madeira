@@ -79,12 +79,13 @@ assert set(presets) == {'rdr2-steam', 'rdr2-other', 'gta5e-steam', 'gta5e-other'
                         'ghost-of-tsushima', 'god-of-war', 'horizon-zero-dawn', 'horizon-forbidden-west', 'ratchet-clank-rift-apart',
                         'crysis-remastered', 'crysis-2-remastered', 'crysis-3-remastered', 'rockstar-launcher', 'rockstar-launcher-setup',
                         'steam-big-picture', 'dark-souls-remastered', 'dark-souls-iii', 'fallout-new-vegas', 'fallout-3', 'black-ops-1', 'black-ops-2', 'borderlands-2',
-                        'standard'} | MERGED, \
+                        'final-fantasy-xiv', 'standard'} | MERGED, \
     sorted(presets)
 assert ('static let all = [rdr2Steam, rdr2Other, gta5EnhancedSteam, gta5EnhancedOther, gta5LegacySteam, gta5LegacyOther, gta4Steam,\n'
         '                      ghostOfTsushima, godOfWar, horizonZeroDawn, horizonForbiddenWest, ratchetClankRiftApart, crysisRemastered,\n'
         '                      crysis2Remastered, crysis3Remastered, rockstarLauncher, rockstarLauncherSetup, steamBigPicture,\n'
-        '                      darkSoulsRemastered, darkSoulsIII, falloutNewVegas, fallout3, blackOps1, blackOps2, borderlands2, standard]\n'
+        '                      darkSoulsRemastered, darkSoulsIII, falloutNewVegas, fallout3, blackOps1, blackOps2, borderlands2, finalFantasyXIV,\n'
+        '                      standard]\n'
         '        + steamTitles.map(\\.list)') in lists_src
 # The Rockstar Games Launcher outside Steam (logs 91-93, 2026-10-28): Launcher.exe in its own folder gets the
 # launcher chain's lines, its installer the standard line; both start in the Wine desktop with Windows services.
@@ -163,7 +164,8 @@ FORK_DEFAULTS = ["# The defaults this list was tested with (upstream's differ)."
                  'env.MADEIRA_FREE_DELAY_MS = 2000', 'env.MADEIRA_CTX_CPU_AREA = 2', 'env.MADEIRA_WAIT_CHILDREN = 1',
                  'env.MADEIRA_JIT_DUMP = 0']
 for ident, p in presets.items():
-    if ident in ('dark-souls-remastered', 'dark-souls-iii'):
+    # FINAL FANTASY XIV's list is the tested entry's settings, which ran without them (2026-11-02).
+    if ident in ('dark-souls-remastered', 'dark-souls-iii', 'final-fantasy-xiv'):
         p['tested'], p['fork'] = [line for line in p['lines'][2:] if not line.startswith('#')], []
         continue
     # The Fallout lists are the standard one plus a switch: the games ran with it.
@@ -202,7 +204,7 @@ for ident, p in presets.items():
         assert 'socialclub' not in named and 'MADEIRA_DLL_LOCAL' not in line, (ident, line)
 for ident in ('fallout-new-vegas', 'fallout-3'):
     assert presets[ident]['tested'] == presets['standard']['tested'] and presets[ident]['switches'] == 'olderNvidia: true', presets[ident]
-print('PASS: seventy-five lists (twenty-six plus 49 merged Steam titles), two comment lines each, every game list but Dark Souls ends with the four fork defaults and the standard, Fallout and Black Ops II ones have none, no key twice, '
+print('PASS: seventy-six lists (twenty-seven plus 49 merged Steam titles), two comment lines each, every game list but Dark Souls and FINAL FANTASY XIV ends with the four fork defaults and the standard, Fallout and Black Ops II ones have none, no key twice, '
       'every non-env key in the settings catalog, no Social Club DLL lines, no variant DLL switches')
 
 # Red Dead Redemption 2 from Steam: the owner's list of 2026-10-09 (build 463), line for line,
@@ -798,7 +800,7 @@ check(id(steam + #"\Call of Duty Black Ops"#, 42700) == "black-ops-1" && id(stea
       && id(steam + #"\Call of Duty Black Ops\BlackOps.exe"#) == "black-ops-1", "the first Black Ops by App ID, folder and program")
 check(id(steam + #"\Call of Duty Black Ops"#, 42710) == "none" && id(steam + #"\Call of Duty Black Ops\BlackOpsMP.exe"#) == "none",
       "the first Black Ops' multiplayer shares the folder and has no list")
-check(R.steamTitles.count == 49 && R.all.count == 75, "49 merged titles, 75 lists")
+check(R.steamTitles.count == 49 && R.all.count == 76, "49 merged titles, 76 lists")
 check(id(#"C:\Games\Foo\foo.exe"#) == "none" && id(steam + #"\Portal 2"#, 620) == "none", "other games")
 check(id("") == "none" && id("C:\\") == "none", "no path")
 print("PASS: Steam games by App ID or steamapps\\common folder, GTA V Enhanced and RDR2 inside and outside Steam, GoT, GoW, the Horizon games, Rift Apart and the three Crysis Remastered games by their programs, GTA V Legacy outside Steam, the 49 merged Steam titles, others none")
@@ -819,6 +821,15 @@ check(id(steam + #"\Dark Souls Remastered"#, 570940) == "dark-souls-remastered",
 check(id(steam + #"\DARK SOULS III"#) == "dark-souls-iii", "Dark Souls III by folder")
 check(id(#"C:\Games\DarkSoulsRemastered.exe"#) == "dark-souls-remastered", "Dark Souls Remastered by executable")
 check(id(#"C:\Games\DarkSoulsIII.exe"#) == "dark-souls-iii", "Dark Souls III by executable")
+for program in [#"C:\Program Files (x86)\SquareEnix\FINAL FANTASY XIV - A Realm Reborn\boot\ffxivboot64.exe"#,
+                #"C:\ffxiv\game\ffxiv_dx11.exe"#, #"C:\External\X\SquareEnix\FFXIV\boot\ffxivboot.exe"#,
+                #"C:\ffxiv\boot\ffxivlauncher64.exe"#] {
+    check(id(program) == "final-fantasy-xiv", "FINAL FANTASY XIV by \(program)")
+}
+check(R.finalFantasyXIV.launchMode == "desktop" && R.finalFantasyXIV.fpsMode == 3 && R.finalFantasyXIV.resolution == "1366x768"
+      && GameProfile.parse(R.finalFantasyXIV.config)["env.MADEIRA_PAD_EARLY_SLOT"] == "1",
+      "FINAL FANTASY XIV: the Wine desktop, 30 FPS at 1366x768, player 1 early")
+check(id(#"C:\ffxiv-dawntrail-bench_v11\ffxiv-dawntrail-bench.exe"#) == "none", "the benchmark is not the game")
 // Every other game: the standard list; a path that names nothing: none.
 check(R.recommendation(windowsPath: #"C:\Games\Foo\foo.exe"#, steamAppID: nil)?.id == "standard"
       && R.recommendation(windowsPath: steam + #"\Portal 2"#, steamAppID: 620)?.id == "standard", "every other game: the standard list")
