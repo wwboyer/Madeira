@@ -104,6 +104,10 @@ struct ZiPatchApplier {
                     }
                 case "SQPK":
                     guard payload.count >= 5 else { throw FFXIVPatchError.damaged("\(name) has an empty SQPK chunk") }
+                    // The command's own size field repeats the chunk's (docs/FFXIV_PATCHING.md).
+                    guard payload.be32(0) == UInt32(size) else {
+                        throw FFXIVPatchError.damaged("\(name) has an SQPK chunk of \(size) bytes that says it has \(payload.be32(0))")
+                    }
                     let command = Character(UnicodeScalar(payload[payload.startIndex + 4]))
                     let label = try sqpk(command, Data(payload.dropFirst(5)), files: &files)
                     counts["SQPK:" + label, default: 0] += 1
@@ -156,7 +160,12 @@ struct ZiPatchApplier {
             }
             try files.write(body[body.startIndex + 11 ..< body.startIndex + 11 + 1024], to: try datPath(body, kind: fileKind),
                             at: headerKind == "V" ? 0 : 1024, create: true)
-        case "X", "T", "I": break   // patch info, target info, index add/delete: nothing to apply
+        case "T":
+            // Target info. Its platform field is 0 in every patch seen, all of which name
+            // .win32 files, and datPath assumes .win32: any other platform stops the run.
+            try body.need(5)
+            guard body.be16(3) == 0 else { throw FFXIVPatchError.unsupported("a patch for platform \(body.be16(3))") }
+        case "X", "I": break   // patch info, index add/delete: nothing to apply
         default:
             // E (expand) included: not seen in a patch yet, so not applied on xiv.dev's word.
             throw FFXIVPatchError.unsupported("the SQPK \(command) command")
@@ -176,13 +185,18 @@ struct ZiPatchApplier {
             // Opens each history patch with an empty path. What it removes is unconfirmed,
             // so it is only accepted where it can't matter: a repository with no files yet.
             // Its .ver/.bck files don't count: a fresh install writes them first, and the
-            // patch list's sizes and file counts leave them out too.
+            // patch list's sizes and file counts leave them out too. Nor do the four opening
+            // movies the official app's starting install has in movie/ffxiv: the base game's
+            // first history part writes each of them again from offset 0, which truncates.
             let folder = expansion == 0 ? "ffxiv" : "ex\(expansion)"
+            let openingMovies = expansion == 0 ? Set((0...3).map { String(format: "%05d.bk2", $0) }) : []
             for part in ["sqpack", "movie"] {
-                let walker = FileManager.default.enumerator(at: root.appendingPathComponent(part).appendingPathComponent(folder),
-                                                            includingPropertiesForKeys: [.isRegularFileKey])
+                let top = root.appendingPathComponent(part).appendingPathComponent(folder)
+                let walker = FileManager.default.enumerator(at: top, includingPropertiesForKeys: [.isRegularFileKey])
                 while let url = walker?.nextObject() as? URL {
-                    if !["ver", "bck"].contains(url.pathExtension),
+                    let movie = part == "movie" && openingMovies.contains(url.lastPathComponent)
+                        && url.deletingLastPathComponent().path == top.path
+                    if !["ver", "bck"].contains(url.pathExtension), !movie,
                        (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
                         throw FFXIVPatchError.resetOfNonEmpty(folder)
                     }
@@ -213,9 +227,7 @@ struct ZiPatchApplier {
     private func writeBlocks(_ blocks: Data, to target: URL, at start: UInt64, files: inout OpenFiles) throws {
         var position = blocks.startIndex
         var offset = start
-        while position + 16 <= blocks.endIndex {
-            let header = blocks.le32(position - blocks.startIndex)
-            guard header == 16 else { break }   // the padding after the last block
+        while position + 16 <= blocks.endIndex, blocks.le32(position - blocks.startIndex) == 16 {
             let compressed = blocks.le32(position - blocks.startIndex + 8)
             let size = Int(blocks.le32(position - blocks.startIndex + 12))
             let raw = compressed == Self.uncompressed
@@ -238,6 +250,11 @@ struct ZiPatchApplier {
                 offset += UInt64(size)
             }
             position += (length + 0x8F) & ~0x7F
+        }
+        // Only zero padding may follow the last block. Anything else would be a block
+        // this doesn't recognize, and skipping it would leave the file short.
+        guard blocks[min(position, blocks.endIndex)...].allSatisfy({ $0 == 0 }) else {
+            throw FFXIVPatchError.damaged("a file block with a header other than 16 bytes")
         }
     }
 

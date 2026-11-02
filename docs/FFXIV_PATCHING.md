@@ -227,7 +227,9 @@ Byte order is big-endian unless a field says otherwise.
   error.
 - **`ADIR`** and **`DELD`** create or delete a folder. They aren't present
   in the boot patch.
-- **`SQPK`** chunks start with a 4-byte size and a 1-byte command:
+- **`SQPK`** chunks start with a 4-byte size and a 1-byte command. The
+  size equals the chunk's own payload size in every chunk of every patch
+  (see the confirmation log); the applier stops when the two disagree.
 
 | Command | Meaning | Seen in boot patch |
 |---|---|---|
@@ -237,6 +239,13 @@ Byte order is big-endian unless a field says otherwise.
 | `A`, `D`, `E` | add, delete or expand blocks in a `.dat` file | none |
 | `H` | rewrite a `.dat` or `.index` header | none |
 | `I` | index add/delete (unused) | none |
+
+`T` is 123 bytes after the command letter in every patch. Its first three
+bytes are zero, and so is the 2-byte field at offset 3. The applier reads that
+field as the platform: every patch so far names `.win32` files, which is the
+only kind of file name it builds, so it stops on any other value. The rest of
+`T` (`ff ff` at offset 5 everywhere; offset 10 and the later bytes vary
+between patches) changes nothing that is written.
 
 ### F (file) operations
 
@@ -257,12 +266,18 @@ the blocks. Observed operations:
 
 - `A` writes the blocks at the offset. Large files come in several
   chunks at increasing offsets.
-- `R`, not in xiv.dev: the first command of each ex1 history part's first
-  file, with an empty path and the repository's expansion ID (1). It
-  presumably resets the repository before the rebuild, but what it removes
-  is unconfirmed, so the applier accepts it only while the repository has no
-  files in `sqpack/` and `movie/` (always true in a fresh install) and stops
-  otherwise.
+- `R`, not in xiv.dev: the first file operation of every repository's
+  first history part (`H2024.05.31.0000.0000a`, right after `X` and `T`),
+  with an empty path and the repository's expansion ID (0 for the base game).
+  It presumably resets the repository before the rebuild, but what it
+  removes is unconfirmed, so the applier accepts it only while the
+  repository has no files in `sqpack/` and `movie/` and stops otherwise.
+  Two kinds of file don't count: the `.ver`/`.bck` files a fresh install
+  writes first, and, for the base game, the four opening movies
+  `movie/ffxiv/00000.bk2` to `00003.bk2` that the official app's starting
+  install already has. The base game's part `a` writes each of those four
+  again starting at offset 0, which truncates it, so what was there doesn't
+  matter.
 - `D` deletes the file. The boot patch deletes the 32-bit
   `ffxivlauncher.exe`, `ffxivupdater.exe` and `ffxivconfig.exe`, which is
   why only four boot-hash files remain.
@@ -271,7 +286,10 @@ Each block has a 16-byte little-endian header: header size (16), unused,
 compressed size and decompressed size. The data follows the header. A
 compressed size of `32000` means the data is stored raw; otherwise it is raw
 deflate. Each block, header included, is padded to a multiple of 128 bytes:
-`(data length + 0x8F) & ~0x7F`.
+`(data length + 0x8F) & ~0x7F`. Every block header seen says 16, and the last
+block ends exactly at the end of its chunk. The applier allows only zero
+bytes after the last block, and stops on a block header it doesn't recognize
+rather than skipping the rest of the file.
 
 ### Dat and index commands (A, D, E, H)
 
@@ -475,8 +493,7 @@ official Mac app's install and played (2026-11-01; see the confirmation log).
   game. Both give a usable list.
 - Whether `D` and `E` behave as xiv.dev describes. No patch seen so far
   uses them; the fresh-install chain may.
-- `H` commands for index files (none seen yet).
-- The remaining `FHDR` fields, and the `T` command.
+- The remaining `FHDR` fields, and `T` beyond its platform field.
 
 ## Provenance
 
@@ -524,5 +541,7 @@ code is copied.
 | Resume | the runner killed 45 s into a fresh ex1 run (part `a` applied, part `b` 738 MB downloaded), then run again | it skipped `a`, continued `b` from its byte offset, and ended byte-identical; a stray file in an empty ex1 made `R` stop the run with nothing changed |
 | Free-space check | 2 GiB written while reading the volume's free space through one URL and through fresh ones | the reused URL kept reporting the old figure (cached resource values), so the runner reads through a fresh URL each time |
 | Base history and `D` at the end | all 34 base history parts streamed and simulated, then `D2024.06.13.0000.0001` replayed over sparse files of those sizes (2026-10-31) | the history build totals exactly field 2 (54,523,146,100 bytes); three of that patch's `D` start exactly at their file's end, and applying them as appends completes the patch |
+| Format sweep | every one of the 204 game patches of the fresh-install list streamed from the server (152,148,949,681 bytes, nothing saved) and both boot patches, checked chunk by chunk (2026-11-02) | all CRC32s valid; in all 1,761,654 `SQPK` chunks the command's size equals the chunk's; `T` 123 bytes with 0 at offset 3 in every patch; all 6,849,020 file-block headers 16, and the last block ends exactly at the end of its chunk in all 69,542 F `A` chunks; F `R` exactly once in each repository's `H2024.05.31.0000.0000a` (as the first file operation, after `X` and `T`), and the base game's part writes each of `movie/ffxiv/00000.bk2` to `00003.bk2` from offset 0; `H` commands for index files (`I` file kind, `V` and `I` headers) 490 of each |
+| Stricter applier | `FFXIVPatcher.swift` in a Mac test driver (2026-11-02): both boot patches into an empty folder, ex1's three newest patches onto the `2026.04.10.0000.0001` snapshot, then edited copies of `D2013.06.18.0000.0000` with valid CRC32s, and crafted `R` chunks | boot files identical to the official app's and ex1 identical to the installed copy; a size field off by one, `T` platform 1 and a block header of 32 are refused; 128 extra zero bytes after a block apply identically; `R` for the base game allows the four opening movies but not a fifth movie, a dat, or a movie one folder down |
 | Gap filling and download-ahead | the runner with gaps forced to 256 KiB and download-ahead to a staging folder: fresh ex1, a run killed 45 s in and resumed, the snapshot update (2026-10-31) | all byte-identical to the installed ex1; the killed run resumed part `b` from 402 MB in the staging folder |
 | Whole fresh install on an iPhone | Madeira installed the game from nothing onto an external APFS spinning disk (all 204 patches plus the boot patches), then the drive was compared with the official Mac app's install at the same versions, SHA-256 per file (2026-11-01) | all 256 files present on both byte-identical (129.0 GB), and the four opening movies (links into the app's own bottle on the Mac) identical too; the only other differences are the Mac app's shader cache link `boot/cache_ffxiv_dx11.exe.bin`, which no patch makes, and Finder's `.DS_Store` files; the game played |
