@@ -544,7 +544,15 @@ struct FFXIVUpdateSection: View {
                     LabeledContent("Space needed", value: ffxivBytes(space.needed))
                     LabeledContent("Free", value: ffxivBytes(space.free))
                 }
-                Toggle("Download ahead to this \(device)", isOn: $downloadAhead)
+                Toggle(isOn: $downloadAhead) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Download ahead to this \(device)")
+                        Text(aheadNote(update)).font(.caption).foregroundStyle(.secondary)
+                        if let warning = aheadWarning(update) {
+                            Text(warning).font(.caption).foregroundStyle(.orange)
+                        }
+                    }
+                }
                 Button("Update") {
                     ffxiv.update(entry: entry, update: update, downloadAhead: downloadAhead)
                     if ffxiv.error == nil { self.update = nil }
@@ -576,14 +584,35 @@ struct FFXIVUpdateSection: View {
             ? "The game's boot programs need an update. After it, press Play again to sign in."
             : "Square Enix listed these patches when you signed in. After the update, press Play again."
         if let space, space.free < space.needed { text += " Free up space first: this update needs more than the device has." }
-        let largest = update.patches.map(\.size).max() ?? 0
-        text += " Download ahead fetches the next patch to this \(device) while one is applied, so a slow drive doesn't hold up the" +
-            " download. It writes every patch to the \(device)'s storage once more, which adds wear, and holds up to two patches" +
-            " (about \(ffxivBytes(2 * largest))) at a time, only while the \(device) has room for the next one plus" +
-            " \(ffxivBytes(FFXIVLibrary.stagingReserve)); otherwise that patch downloads to the game's drive as usual."
-        if downloadAhead, let phoneFree, phoneFree < largest + FFXIVLibrary.stagingReserve {
-            text += " This \(device) has \(ffxivBytes(phoneFree)) free, too little for the largest patch, so downloads will mostly go to the drive."
-        }
         return text
+    }
+
+    /// Whether the game is on an external drive (ExternalDrives.swift).
+    private var onExternalDrive: Bool { ExternalDrives.driveName(library: LibraryModel.shared.relativeRoot(entry)) != nil }
+
+    /// What download-ahead keeps on this device at most: the patch being applied, the
+    /// next one, and the reserve.
+    private func aheadNeed(_ update: SquareEnixUpdate) -> Int64 {
+        2 * (update.patches.map(\.size).max() ?? 0) + FFXIVLibrary.stagingReserve
+    }
+
+    /// Download-ahead's case for this install: recommended for a game on an external
+    /// drive, whose connection is usually its slowest part, and what it costs.
+    private func aheadNote(_ update: SquareEnixUpdate) -> String {
+        let need = ffxivBytes(aheadNeed(update))
+        if onExternalDrive {
+            return "Recommended for a game on an external drive: the next patch downloads to this \(device) while one is applied," +
+                " so downloads don't use the drive's connection, which is usually its slowest part. Needs about \(need) free on" +
+                " this \(device), and writes every patch to its storage once more, which adds wear to it."
+        }
+        return "The next patch downloads while one is applied. Needs about \(need) free on this \(device); patches are" +
+            " written to it either way, so this adds no wear."
+    }
+
+    /// When this device has too little room: download-ahead then mostly stands aside.
+    private func aheadWarning(_ update: SquareEnixUpdate) -> String? {
+        guard let phoneFree, phoneFree < aheadNeed(update) else { return nil }
+        return "This \(device) has \(ffxivBytes(phoneFree)) free, so " +
+            (onExternalDrive ? "many patches will download to the drive instead." : "patches will mostly download one at a time.")
     }
 }
