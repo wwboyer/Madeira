@@ -3678,7 +3678,7 @@ struct LibraryView: View {
     }
     /// The zoomable page (LibraryGridPage.swift): the card layouts as one pinchable collection view, with the same sheets and rules as `library`.
     private var zoomableLibrary: some View {
-        LibraryGridPage(search: search, sort: sort, group: group, layout: $layout, others: entries,
+        LibraryGridPage(search: search, sort: sort, group: group, layout: $layout, others: entries, ffxiv: ffxivEntries,
                         hideOthers: $hideOthers, focused: controller.connected ? focused : nil,
                         open: { selected = $0 },
                         desktop: { AnyView(desktopButton) })

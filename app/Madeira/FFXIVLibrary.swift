@@ -410,6 +410,45 @@ struct FFXIVSection<Cells: View>: View {
     }
 }
 
+/// The FINAL FANTASY XIV section's parts besides its game cards, for the zoomable grid
+/// (LibraryGridPage.swift), whose own cards show the entries: an install running, the
+/// install card when there are no entries, an error, and the link to install a new copy.
+struct FFXIVGridExtras: View {
+    let hasEntries: Bool
+    let open: (LibraryEntry) -> Void
+    @ObservedObject private var ffxiv = FFXIVLibrary.shared
+    @State private var installing = false
+
+    /// What the block's height follows: the grid measures it again when this changes.
+    @MainActor static func signature(hasEntries: Bool) -> String {
+        let library = FFXIVLibrary.shared, job = library.job
+        let installing = job.map { $0.kind == .install && $0.entryID == nil } ?? false
+        return "\(hasEntries) \(installing) \(job?.paused ?? false) \(job?.ahead != nil) \(library.error != nil) \(job != nil)"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if let job = ffxiv.job, job.kind == .install, job.entryID == nil {
+                FFXIVJobStatus(job: job)
+            } else if !hasEntries {
+                FFXIVInstallCard { installing = true }
+            }
+            if let error = ffxiv.error, ffxiv.job == nil {
+                Label(error, systemImage: "exclamationmark.triangle.fill").font(.subheadline).foregroundStyle(.red)
+            }
+            if hasEntries && ffxiv.job == nil {
+                Button("Install a new copy…") { installing = true }.font(.subheadline)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .sheet(isPresented: $installing) {
+            FFXIVInstallSheet { entry in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { open(entry) }
+            }
+        }
+    }
+}
+
 struct FFXIVInstallCard: View {
     var install: () -> Void
     var body: some View {
