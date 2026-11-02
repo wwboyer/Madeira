@@ -648,6 +648,12 @@ struct FFXIVPatchRunner {
 
     // MARK: Downloading
 
+    /// Network errors that are worth asking again for: the connection dropped or timed out,
+    /// or there was briefly no network or no answer from the server.
+    static let retriedErrors: Set<URLError.Code> = [.networkConnectionLost, .timedOut, .notConnectedToInternet,
+                                                    .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed, .dataNotAllowed]
+    static let retryDelays = [1, 2, 4, 8, 15, 30]
+
     private func download(_ patch: SquareEnixPatch, to file: URL, index: Int, count: Int) async throws -> Timing {
         var timing = Timing()
         let name = patch.url.lastPathComponent
@@ -660,6 +666,7 @@ struct FFXIVPatchRunner {
         let output = try FileHandle(forWritingTo: file)
         defer { try? output.close() }
         try output.seekToEnd()
+        var failures = 0
         while have < patch.size {
             try Task.checkCancellation()
             let last = min(have + piece, patch.size) - 1
@@ -667,8 +674,30 @@ struct FFXIVPatchRunner {
             request.setValue("bytes=\(have)-\(last)", forHTTPHeaderField: "Range")
             let (data, reply): (Data, URLResponse)
             let asked = Date()
-            do { (data, reply) = try await session.data(for: request) } catch is CancellationError { throw CancellationError() }
-            catch { throw FFXIVPatchError.download("\(name): \((error as? URLError)?.code.rawValue ?? -1)") }
+            // A dropped connection or a server error is tried again from the same byte, after
+            // 1, 2, 4, 8, 15 and 30 s: on 2026-11-02 a connection lost (-1005) while Madeira was
+            // in the background stopped a run that only needed to ask again.
+            var problem: String?
+            do {
+                (data, reply) = try await session.data(for: request)
+                if let http = reply as? HTTPURLResponse, http.statusCode >= 500 { problem = "HTTP \(http.statusCode)" }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as URLError where Self.retriedErrors.contains(error.code) {
+                (data, reply) = (Data(), URLResponse())
+                problem = "\(error.code.rawValue)"
+            } catch {
+                throw FFXIVPatchError.download("\(name): \((error as? URLError)?.code.rawValue ?? -1)")
+            }
+            if let problem {
+                guard failures < Self.retryDelays.count else { throw FFXIVPatchError.download("\(name): \(problem)") }
+                let delay = Self.retryDelays[failures]
+                failures += 1
+                progress(.note("\(name): \(problem) at byte \(have); trying again in \(delay) s (\(failures) of \(Self.retryDelays.count))"))
+                try await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000_000)
+                continue
+            }
+            failures = 0
             guard let http = reply as? HTTPURLResponse, http.statusCode == 206, Int64(data.count) == last - have + 1 else {
                 throw FFXIVPatchError.download("\(name): HTTP \((reply as? HTTPURLResponse)?.statusCode ?? 0) for a range")
             }
