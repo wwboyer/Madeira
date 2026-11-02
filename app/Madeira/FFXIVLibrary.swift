@@ -3,6 +3,7 @@
 // Madeira Converter Exception: see LICENSE-EXCEPTION.md
 
 import SwiftUI
+import UIKit
 
 // FINAL FANTASY XIV in the library (docs/FFXIV_PATCHING.md, "Madeira's design"):
 // its section, a fresh install, and Game details' Update. Installing makes the
@@ -233,6 +234,9 @@ import SwiftUI
         work = [:]
         workFloor = nil
         workReported = 0
+        workChanged = Date()
+        longestGap = 0
+        watchForeground()
         var runner = FFXIVPatchRunner(install: root)
         runner.staging = Self.stagingFolder   // also where a partial download from an earlier run is looked for
         runner.downloadAhead = job.downloadAhead
@@ -271,18 +275,73 @@ import SwiftUI
     /// The first patch not yet applied in this run; the ones before it count in full.
     private var workFloor: Int?
     private var workReported: Int64 = 0
+    /// When the count last grew, the longest wait between two growths in the current
+    /// patch (for its "applied" line), and when the last background progress line was
+    /// written. A wait of `gapToLog` or more is logged with the event that ended it.
+    private var workChanged = Date()
+    private var longestGap: TimeInterval = 0
+    private var backgroundLogged = Date.distantPast
+    private static let gapToLog: TimeInterval = 10
 
-    private func reportWork(offsets: [Int64]) {
+    private func reportWork(offsets: [Int64], after event: String) {
         guard let floor = workFloor, let total = offsets.last else { return }
         let current = work.filter { $0.key >= floor }.values.reduce(Int64(0)) { $0 + $1.downloaded + $1.checked + $1.applied }
-        workReported = max(workReported, 3 * offsets[floor - 1] + current)
+        let done = 3 * offsets[floor - 1] + current
+        if done > workReported {
+            let now = Date(), gap = now.timeIntervalSince(workChanged)
+            longestGap = max(longestGap, gap)
+            if gap >= Self.gapToLog { log(String(format: "progress gap %.1f s, ended by %@", gap, event)) }
+            workChanged = now
+            if UIApplication.shared.applicationState != .active, now.timeIntervalSince(backgroundLogged) >= 5 {
+                backgroundLogged = now
+                log(String(format: "background progress %.4f%% after %@", Double(done) / Double(max(1, 3 * total)) * 100, event))
+            }
+        }
+        workReported = max(workReported, done)
         background.progress(doneBytes: UInt64(workReported), totalBytes: UInt64(max(1, 3 * total)))
+    }
+
+    /// Logs Madeira leaving and returning to the foreground while a run is going, so a
+    /// background stop can be lined up with what the run was doing.
+    private var watchingForeground = false
+    private func watchForeground() {
+        guard !watchingForeground else { return }
+        watchingForeground = true
+        for (name, text) in [(UIApplication.didEnterBackgroundNotification, "left the foreground"),
+                             (UIApplication.didBecomeActiveNotification, "active again")] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated {
+                    let library = FFXIVLibrary.shared
+                    guard let job = library.job else { return }
+                    library.log(String(format: "%@ (%@; %.1f s since progress last grew)", text,
+                                       job.paused ? "paused" : job.detail, Date().timeIntervalSince(library.workChanged)))
+                }
+            }
+        }
+    }
+
+    /// A short label for logs: the kind of event, its patch number and bytes.
+    private static func describe(_ event: FFXIVPatchRunner.Event) -> String {
+        switch event {
+        case .downloading(let index, _, _, let received, _): return "download of #\(index) at \(received)"
+        case .checking(let index, _, _): return "check of #\(index) starting"
+        case .checkProgress(let index, let bytes): return "check of #\(index) at \(bytes)"
+        case .applying(let index, _, _): return "apply of #\(index) starting"
+        case .applyProgress(let index, let bytes): return "apply of #\(index) at \(bytes)"
+        case .applied(let index, _, _, _, _): return "#\(index) applied"
+        case .measured: return "a size check"
+        case .drive: return "the drive check"
+        case .note: return "a note"
+        }
     }
 
     private func report(_ event: FFXIVPatchRunner.Event, offsets: [Int64]) {
         guard job != nil, job?.paused == false else { return }
         let size = { (index: Int) in offsets[index] - offsets[index - 1] }
-        defer { reportWork(offsets: offsets) }
+        defer {
+            reportWork(offsets: offsets, after: Self.describe(event))
+            if case .applied = event { longestGap = 0 }   // after the gap that ended with it was counted
+        }
         switch event {
         case .downloading(let index, let count, let name, let received, let total):
             workFloor = workFloor ?? index
@@ -319,10 +378,11 @@ import SwiftUI
             let patchBytes = size(index)
             let rate = { (bytes: Int64, seconds: Double) in seconds > 0 ? String(format: "%.1f MB/s", Double(bytes) / seconds / 1e6) : "-" }
             log("applied \(name)" + (version.map { ", now \($0)" } ?? "") + String(
-                format: "; downloaded %lld bytes: network %.1f s (%@), drive writes %.1f s (%@); check %.1f s (%@); apply %.1f s (%@)",
+                format: "; downloaded %lld bytes: network %.1f s (%@), drive writes %.1f s (%@); check %.1f s (%@); apply %.1f s (%@); longest progress gap %.1f s",
                 timing.downloaded, timing.network, rate(timing.downloaded, timing.network),
                 timing.downloadWrites, rate(timing.downloaded, timing.downloadWrites),
-                timing.check, rate(patchBytes, timing.check), timing.apply, rate(patchBytes, timing.apply)))
+                timing.check, rate(patchBytes, timing.check), timing.apply, rate(patchBytes, timing.apply),
+                max(longestGap, Date().timeIntervalSince(workChanged))))
         case .measured(let repository, let bytes, let expected):
             log("size check \(repository): \(bytes) bytes, the list says \(expected)" + (bytes == expected ? ", same" : ", DIFFERENT"))
         case .drive(let spins, let milliseconds, let file):
