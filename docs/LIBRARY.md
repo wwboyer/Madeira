@@ -55,7 +55,8 @@ Removing an entry never removes the game's files or saves.
   card that downloads the game from Square Enix to this device or an
   external drive, `docs/FFXIV_PATCHING.md`;
   `env.MADEIRA_FFXIV = 0` turns the section off and puts its entries back
-  in Other games), then **Other games** (the games you added; **+** in the navigation bar adds one). Tapping
+  in Other games; the zoomable grid shows the same section, its entries as
+  grid cards), then **Other games** (the games you added; **+** in the navigation bar adds one). Tapping
   **Steam** or **Other games** collapses it; **Not installed** folds on its
   own, open by default; each state is remembered. Search, the layout and, for
   installed games, Sort by apply to every section. Pull down to read the

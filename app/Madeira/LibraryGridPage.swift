@@ -52,6 +52,8 @@ enum LibraryGridFixed: Hashable {
     case emptyLibrary
     /// A store's own section (GOGGamesSection, ItchGamesSection, EpicGamesSection, EAGamesSection); `signature` is what its height follows.
     case store(LibraryGridStore, signature: String)
+    /// FINAL FANTASY XIV's install card, install progress and links (FFXIVGridExtras); its entries are cards.
+    case ffxiv(signature: String)
 
     var id: String {
         switch self {
@@ -64,6 +66,7 @@ enum LibraryGridFixed: Hashable {
         case .note(let id, _): return "note." + id
         case .notInstalledToggle: return "toggle.notInstalled"
         case .emptyLibrary: return "empty"
+        case .ffxiv: return "ffxiv"
         case .store(let store, _): return "store." + store.rawValue
         }
     }
@@ -209,6 +212,11 @@ struct LibraryGridPageModel: Equatable {
         var collapsedGroups: String
         /// The shown store sections and their signatures (LibraryGridStore.signatures).
         var stores: [LibraryGridStore: String] = [:]
+        /// FINAL FANTASY XIV's section (FFXIVLibrary.swift): its entries, collapsed state and the
+        /// extras block's signature; nil when the section is off.
+        var ffxiv: [LibraryEntry] = []
+        var hideFFXIV = false
+        var ffxivSignature: String?
         /// The store tabs offered (none: every section) and the one shown (LibraryStoreTab).
         var tabs: [LibraryStoreTab] = []
         var tab: LibraryStoreTab = .all
@@ -225,6 +233,8 @@ struct LibraryGridPageModel: Equatable {
             let tab = inputs.tab
             let steamFirst = MadeiraDock.enabled && LibraryGridSteamItems.hasInstalled
             if steamFirst && tab.shows(.steam) { page.steamSection(inputs, part: .installed) }
+            // As on the original page: FINAL FANTASY XIV between installed Steam games and Other games.
+            if let signature = inputs.ffxivSignature { page.ffxivSection(inputs, signature: signature) }
             if LibraryGridSteamItems.shown {
                 if tab.shows(.other) { page.othersSection(inputs) }
                 if MadeiraDock.enabled && tab.shows(.steam) { page.steamSection(inputs, part: steamFirst ? .notInstalled : .all) }
@@ -253,6 +263,16 @@ struct LibraryGridPageModel: Equatable {
     private mutating func grid(_ id: String, _ list: [LibraryEntry], spacing: CGFloat) {
         for entry in list { entries[entry.id] = entry }
         append(.grid(id: id, cards: list.map { .entry($0.id) }), spacing: spacing)
+    }
+
+    private mutating func ffxivSection(_ inputs: Inputs, signature: String) {
+        let collapsible = SteamGamesSection.collapsible
+        append(.fixed(.header(id: "ffxiv", title: "FINAL FANTASY XIV", count: inputs.ffxiv.count,
+                              collapse: collapsible ? "ffxiv" : nil, collapsed: inputs.hideFFXIV)),
+               spacing: LibraryGridGeometry.blockSpacing)
+        guard !(inputs.hideFFXIV && collapsible) else { return }
+        append(.fixed(.ffxiv(signature: signature)), spacing: LibraryGridGeometry.sectionSpacing)
+        if !inputs.ffxiv.isEmpty { grid("ffxiv", inputs.ffxiv, spacing: LibraryGridGeometry.sectionSpacing) }
     }
 
     private mutating func othersSection(_ inputs: Inputs) {
@@ -452,6 +472,7 @@ struct LibraryGridInputsKey: Hashable {
     var stores: [LibraryGridStore: String]
     var tabs: [LibraryStoreTab], tab: LibraryStoreTab
     var otherIDs: [UUID]
+    var ffxivIDs: [UUID], hideFFXIV: Bool, ffxivSignature: String?
     var switches: [Bool]
     /// Sort by size reads the metadata, and sort by added orders by the entries a metadata change can create, so a
     /// metadata change can move a card: never a delta.
@@ -464,6 +485,7 @@ struct LibraryGridInputsKey: Hashable {
         stores = i.stores
         tabs = i.tabs; tab = i.tab
         otherIDs = i.others.map(\.id)
+        ffxivIDs = i.ffxiv.map(\.id); hideFFXIV = i.hideFFXIV; ffxivSignature = i.ffxivSignature
         switches = [SteamGamesSection.collapsible, MadeiraDock.enabled, LibraryGridSteamItems.shown, SteamOwnedLibrary.enabled]
         metadataMovesCards = i.sort == "size" || i.sort == "added"
     }
@@ -491,6 +513,8 @@ struct LibraryGridPage: View {
     let group: String
     @Binding var layout: String
     let others: [LibraryEntry]
+    /// FINAL FANTASY XIV's entries, for its section (empty when the section is off).
+    var ffxiv: [LibraryEntry] = []
     @Binding var hideOthers: Bool
     let focused: UUID?
     let open: (LibraryEntry) -> Void
@@ -506,6 +530,8 @@ struct LibraryGridPage: View {
     @ObservedObject private var ea = EALibrary.shared
     @AppStorage("madeiraLibraryHideGOG") private var hideGOG = false
     @AppStorage("madeiraGOGShowUninstalled") private var showGOG = true
+    @ObservedObject private var ffxivLibrary = FFXIVLibrary.shared
+    @AppStorage("madeiraLibraryHideFFXIV") private var hideFFXIV = false
     @AppStorage("madeiraLibraryHideItch") private var hideItch = false
     @AppStorage("madeiraItchShowUninstalled") private var showItch = true
     @AppStorage("madeiraLibraryHideEpic") private var hideEpic = false
@@ -533,6 +559,9 @@ struct LibraryGridPage: View {
                                                  hideOthers: hideOthers, hideInstalled: hideInstalled,
                                                  showUninstalled: showUninstalled, collapsedGroups: collapsedGroups,
                                                  stores: group == "platform" ? LibraryGridStore.signatures(search: search, layout: layout) : [:],
+                                                 ffxiv: ffxiv, hideFFXIV: hideFFXIV,
+                                                 ffxivSignature: group == "platform" && FFXIVLibrary.enabled
+                                                    ? FFXIVGridExtras.signature(hasEntries: !ffxiv.isEmpty) : nil,
                                                  tabs: tabs, tab: LibraryStoreTab.current(storeTab, in: tabs))
         LibraryGridHostView(
             build: { LibraryGridPageModel.build(inputs) }, inputsKey: LibraryGridInputsKey(inputs),
@@ -603,6 +632,8 @@ struct LibraryGridPage: View {
             return AnyView(Text(text).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading))
         case .notInstalledToggle(let count, _):
             return AnyView(LibraryGridNotInstalledToggle(count: count))
+        case .ffxiv:
+            return AnyView(FFXIVGridExtras(hasEntries: !ffxiv.isEmpty, open: open))
         case .emptyLibrary:
             return AnyView(ContentUnavailableView("Make yourself at home", systemImage: "gamecontroller", description: Text("Copy a game's folder into Madeira › wine › drive_c with the Files app, then tap + and choose its .exe.")))
         case .store(.gog, _):
@@ -624,6 +655,7 @@ private struct LibraryGridHeader: View {
     @Binding var hideOthers: Bool
     @ObservedObject private var steam = SteamOwnedLibrary.shared
     @AppStorage("madeiraLibraryHideInstalled") private var hideInstalled = false
+    @AppStorage("madeiraLibraryHideFFXIV") private var hideFFXIV = false
     @AppStorage("madeiraLibraryCollapsedGroups") private var collapsedGroups = ""
 
     var body: some View {
@@ -636,6 +668,7 @@ private struct LibraryGridHeader: View {
         guard let collapse else { return nil }
         if collapse == "others" { return $hideOthers }
         if collapse == "installed" { return $hideInstalled }
+        if collapse == "ffxiv" { return $hideFFXIV }
         let key = String(collapse.dropFirst("group:".count))
         return Binding(get: { LibraryGrouping.collapsed(collapsedGroups).contains(key) }, set: { on in
             var set = LibraryGrouping.collapsed(collapsedGroups)
