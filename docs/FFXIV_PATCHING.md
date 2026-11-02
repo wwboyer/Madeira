@@ -380,9 +380,17 @@ official Mac app's install and played (2026-11-01; see the confirmation log).
     downloads while the current one is checked and applied, so a slow drive
     doesn't hold up the network (and a staged patch is read back from fast
     storage). Only while the device has room for that patch plus 1 GiB;
-    otherwise it downloads to the install's work folder in turn. It writes
-    every patch to the device's flash once more, hence the switch. A partial
-    download in either folder is resumed.
+    otherwise it downloads to the install's work folder in turn. For a game
+    on an external drive it writes every patch to the device's flash once
+    more (for a game on the device, patches land on it either way), hence
+    the switch. A partial download in either folder is resumed. The switch's
+    caption recommends it for a game on an external drive and gives what it
+    needs on the device (two of the list's largest patches plus 1 GiB) and,
+    for a drive, the extra wear, with a warning when the device has less
+    room. A model of a whole fresh install to a fast drive behind a USB 2
+    port (48 MB/s) put it at about 1.1 hours with download-ahead and several
+    times that without; more download connections would save under a
+    tenth, the drive's connection being the limit.
   - **Memory:** FileHandle's reads return autoreleased buffers, and the
     runner's loops rarely suspend, so a run held on to everything it read: a
     fresh ex1 run peaked at a 3.97 GB footprint on the Mac (3.69 GB without
