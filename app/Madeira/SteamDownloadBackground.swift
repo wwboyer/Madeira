@@ -116,6 +116,19 @@ import UserNotifications
         if isBackground { beginGrace() }
     }
 
+    /// The continued-processing task held here is gone without its expiration handler
+    /// running: iOS's scheduler (dasd) was killed and restarted without it, and Madeira
+    /// was suspended at once (2026-11-02). Called while Madeira is in the foreground:
+    /// ends it and asks for a new one, so the next time Madeira leaves the foreground the
+    /// download keeps going.
+    func replaceLostTask() {
+        guard #available(iOS 26.0, *), Self.continuedEnabled, activeDownload?() == true else { return }
+        log("continued-processing replaced: the old task stopped without expiring")
+        finishContinued(success: false)
+        continuedPending = false
+        submitContinued()
+    }
+
     func progress(_ progress: SteamDownloadProgress) {
         self.progress(doneBytes: progress.doneBytes, totalBytes: progress.totalBytes)
         if #available(iOS 26.0, *), let task = continued as? BGContinuedProcessingTask {

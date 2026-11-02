@@ -236,6 +236,7 @@ import UIKit
         workReported = 0
         workChanged = Date()
         longestGap = 0
+        taskLost = false
         watchForeground()
         var runner = FFXIVPatchRunner(install: root)
         runner.staging = Self.stagingFolder   // also where a partial download from an earlier run is looked for
@@ -285,6 +286,12 @@ import UIKit
     private var longestGap: TimeInterval = 0
     private var backgroundLogged = Date.distantPast
     private static let gapToLog: TimeInterval = 10
+    /// A wait of `lostTaskGap` or more that ended while Madeira wasn't in the foreground,
+    /// with the run not paused: iOS would have expired a living background task (and the
+    /// run would have paused), so the task is gone and Madeira was suspended instead.
+    /// When Madeira is active again the task is replaced (SteamDownloadBackground.replaceLostTask).
+    private var taskLost = false
+    private static let lostTaskGap: TimeInterval = 30
 
     private func reportWork(offsets: [Int64], after event: String) {
         guard let floor = workFloor, let total = offsets.last else { return }
@@ -296,6 +303,7 @@ import UIKit
             let now = Date(), gap = now.timeIntervalSince(workChanged)
             longestGap = max(longestGap, gap)
             if gap >= Self.gapToLog { log(String(format: "progress gap %.1f s, ended by %@", gap, event)) }
+            if gap >= Self.lostTaskGap, UIApplication.shared.applicationState != .active { taskLost = true }
             workChanged = now
             if UIApplication.shared.applicationState != .active, now.timeIntervalSince(backgroundLogged) >= 5 {
                 backgroundLogged = now
@@ -318,8 +326,15 @@ import UIKit
                 MainActor.assumeIsolated {
                     let library = FFXIVLibrary.shared
                     guard let job = library.job else { return }
+                    let since = Date().timeIntervalSince(library.workChanged)
                     library.log(String(format: "%@ (%@; %.1f s since progress last grew)", text,
-                                       job.paused ? "paused" : job.detail, Date().timeIntervalSince(library.workChanged)))
+                                       job.paused ? "paused" : job.detail, since))
+                    guard name == UIApplication.didBecomeActiveNotification else { return }
+                    if !job.paused, library.taskLost || since >= FFXIVLibrary.lostTaskGap {
+                        library.log("the background task stopped without expiring while Madeira was away; asking iOS for a new one")
+                        library.background.replaceLostTask()
+                    }
+                    library.taskLost = false
                 }
             }
         }
