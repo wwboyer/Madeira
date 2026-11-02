@@ -511,6 +511,10 @@ struct SteamGamesSection: View {
         if EpicLibrary.enabled && EpicLibrary.shared.signedIn {
             await EpicLibrary.shared.refreshLibrary(interactive: true)
         }
+        // The EA app section refreshes with the same pull (EAGames.swift).
+        if EALibrary.enabled && EALibrary.shared.signedIn {
+            await EALibrary.shared.refreshLibrary(interactive: true)
+        }
     }
 
     /// Sort by data from the Steam games' library entries.
@@ -607,7 +611,10 @@ struct SteamGamesSection: View {
             if libraryEnabled { steam.start(); steam.reconcileSession() }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { model.refresh(); if libraryEnabled { steam.reconcileSession() } }
+            if phase == .active {
+                model.refresh()
+                if libraryEnabled { steam.reconcileSession(); steam.refreshAfterForeground() }
+            }
         }
         .sheet(item: $selected) { selection in
             SteamGameSheet(appID: selection.id) { entry in

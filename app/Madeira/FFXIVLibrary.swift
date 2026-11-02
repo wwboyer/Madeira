@@ -46,7 +46,7 @@ import SwiftUI
     /// Whether an entry names one of the game's own programs (FFXIVInstall.programs),
     /// from its path alone: views call this, so it never touches the disk.
     static func isFFXIV(_ entry: LibraryEntry) -> Bool {
-        guard entry.desktop != true, entry.steamAppID == nil, entry.epicAppName == nil, entry.itchGameID == nil else { return false }
+        guard entry.desktop != true, entry.steamAppID == nil, entry.epicAppName == nil, entry.itchGameID == nil, entry.eaOfferID == nil else { return false }
         let tail = entry.relativePath.lowercased().split(separator: "/").suffix(2).joined(separator: "/")
         return FFXIVInstall.programs.contains(tail)
     }

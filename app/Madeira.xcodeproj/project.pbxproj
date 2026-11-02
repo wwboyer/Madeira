@@ -19,10 +19,19 @@
 		A1000531 /* SteamGames.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000531 /* SteamGames.swift */; };
 		A1007B02 /* SwiftItch/ItchAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2007B02 /* ItchAPI.swift */; };
 		A1007B03 /* SwiftItch/ItchArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2007B03 /* ItchArchive.swift */; };
+		A1007B30 /* SwiftItch/itch_7z.c in Sources */ = {isa = PBXBuildFile; fileRef = A2007B30 /* itch_7z.c */; };
 		A1007B04 /* ItchLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2007B04 /* ItchLibrary.swift */; };
 		A1007B05 /* ItchGames.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2007B05 /* ItchGames.swift */; };
+		A1006B01 /* EALibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2006B01 /* EALibrary.swift */; };
+		A1006B02 /* EAGames.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2006B02 /* EAGames.swift */; };
+		A1006B03 /* SwiftEA/EAAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2006B03 /* EAAPI.swift */; };
+		A1006B04 /* SwiftEA/EAFormats.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2006B04 /* EAFormats.swift */; };
+		A1006B05 /* SwiftEA/EADownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2006B05 /* EADownloader.swift */; };
+		A1006B06 /* SwiftEA/EALicense.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2006B06 /* EALicense.swift */; };
+		A1006B07 /* SwiftEA/EAService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2006B07 /* EAService.swift */; };
 		A1000900 /* LiquidMetal.metal in Sources */ = {isa = PBXBuildFile; fileRef = A2000900 /* LiquidMetal.metal */; };
 		A1000910 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A2000910 /* Assets.xcassets */; };
+		A1009C03 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = A2009C03 /* Localizable.xcstrings */; };
 		A1000902 /* GlassSkin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000902 /* GlassSkin.swift */; };
 		A1000903 /* LiquidMetalSkin.metal in Sources */ = {isa = PBXBuildFile; fileRef = A2000903 /* LiquidMetalSkin.metal */; };
 		A1000904 /* AmbientGlow.metal in Sources */ = {isa = PBXBuildFile; fileRef = A2000904 /* AmbientGlow.metal */; };
@@ -111,6 +120,7 @@
 		B1000061 /* AppleSignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000061 /* AppleSignIn.swift */; };
 		B1000041 /* libmadeira_rppairing.a in Frameworks */ = {isa = PBXBuildFile; fileRef = B2000041 /* libmadeira_rppairing.a */; };
 		B1000004 /* madeira-jit.js in Resources */ = {isa = PBXBuildFile; fileRef = B2000004 /* madeira-jit.js */; };
+		B100CA02 /* Give-to-Claude-with-log-and-cfg.txt in Resources */ = {isa = PBXBuildFile; fileRef = B200CA02 /* Give-to-Claude-with-log-and-cfg.txt */; };
 		B1000051 /* Madeira JIT.shortcut in Resources */ = {isa = PBXBuildFile; fileRef = B2000051 /* Madeira JIT.shortcut */; };
 		B1000005 /* ExtensionFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B2000010 /* ExtensionFoundation.framework */; settings = {ATTRIBUTES = (Weak, ); }; };
 		B1000010 /* MadeiraJITHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000020 /* MadeiraJITHelper.swift */; };
@@ -164,8 +174,12 @@
 		A1000201 /* LogTail.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000201 /* LogTail.swift */; };
 		A1000202 /* FPSOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000202 /* FPSOverlay.swift */; };
 		A1000213 /* LibraryBCD.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000213 /* LibraryBCD.swift */; };
+		A1007C01 /* GPUCards.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2007C01 /* GPUCards.swift */; };
 		A1000914 /* LibraryPrefs.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000914 /* LibraryPrefs.swift */; };
 		A1000990 /* GameIniFiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000990 /* GameIniFiles.swift */; };
+		A1009C01 /* GameSetupShare.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2009C01 /* GameSetupShare.swift */; };
+		A1009C04 /* SteamAchievements.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2009C04 /* SteamAchievements.swift */; };
+		A100CA01 /* ClaudeHelp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200CA01 /* ClaudeHelp.swift */; };
 		A1000208 /* GameProfiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000208 /* GameProfiles.swift */; };
 		A1000911 /* GameRecommendations.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000911 /* GameRecommendations.swift */; };
 		A1000912 /* GameRecommendationsApply.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000912 /* GameRecommendationsApply.swift */; };
@@ -275,10 +289,20 @@
 		A2000531 /* SteamGames.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SteamGames.swift"; sourceTree = "<group>"; };
 		A2007B02 /* ItchAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SwiftItch/ItchAPI.swift"; sourceTree = "<group>"; };
 		A2007B03 /* ItchArchive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SwiftItch/ItchArchive.swift"; sourceTree = "<group>"; };
+		A2007B30 /* itch_7z.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "SwiftItch/itch_7z.c"; sourceTree = "<group>"; };
+		A2007B31 /* itch_7z.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "SwiftItch/itch_7z.h"; sourceTree = "<group>"; };
 		A2007B04 /* ItchLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ItchLibrary.swift"; sourceTree = "<group>"; };
 		A2007B05 /* ItchGames.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ItchGames.swift"; sourceTree = "<group>"; };
+		A2006B01 /* EALibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "EALibrary.swift"; sourceTree = "<group>"; };
+		A2006B02 /* EAGames.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "EAGames.swift"; sourceTree = "<group>"; };
+		A2006B03 /* EAAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SwiftEA/EAAPI.swift"; sourceTree = "<group>"; };
+		A2006B04 /* EAFormats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SwiftEA/EAFormats.swift"; sourceTree = "<group>"; };
+		A2006B05 /* EADownloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SwiftEA/EADownloader.swift"; sourceTree = "<group>"; };
+		A2006B06 /* EALicense.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SwiftEA/EALicense.swift"; sourceTree = "<group>"; };
+		A2006B07 /* EAService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SwiftEA/EAService.swift"; sourceTree = "<group>"; };
 		A2000900 /* LiquidMetal.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = "LiquidMetal.metal"; sourceTree = "<group>"; };
 		A2000910 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A2009C03 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
 		A2000902 /* GlassSkin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "GlassSkin.swift"; sourceTree = "<group>"; };
 		A2000903 /* LiquidMetalSkin.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = "LiquidMetalSkin.metal"; sourceTree = "<group>"; };
 		A2000904 /* AmbientGlow.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = "AmbientGlow.metal"; sourceTree = "<group>"; };
@@ -380,6 +404,7 @@
 		B2000041 /* libmadeira_rppairing.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libmadeira_rppairing.a; sourceTree = "<group>"; };
 		B2000042 /* MadeiraRPPairing.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MadeiraRPPairing.h; sourceTree = "<group>"; };
 		B2000004 /* madeira-jit.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = "madeira-jit.js"; sourceTree = "<group>"; };
+		B200CA02 /* Give-to-Claude-with-log-and-cfg.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "Give-to-Claude-with-log-and-cfg.txt"; sourceTree = "<group>"; };
 		B2000051 /* Madeira JIT.shortcut */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Madeira JIT.shortcut"; sourceTree = "<group>"; };
 		B2000010 /* ExtensionFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ExtensionFoundation.framework; path = System/Library/Frameworks/ExtensionFoundation.framework; sourceTree = SDKROOT; };
 		B2000020 /* MadeiraJITHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MadeiraJITHelper.swift; sourceTree = "<group>"; };
@@ -437,8 +462,12 @@
 		A2000201 /* LogTail.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogTail.swift; sourceTree = "<group>"; };
 		A2000202 /* FPSOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FPSOverlay.swift; sourceTree = "<group>"; };
 		A2000213 /* LibraryBCD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryBCD.swift; sourceTree = "<group>"; };
+		A2007C01 /* GPUCards.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GPUCards.swift; sourceTree = "<group>"; };
 		A2000914 /* LibraryPrefs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryPrefs.swift; sourceTree = "<group>"; };
 		A2000990 /* GameIniFiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameIniFiles.swift; sourceTree = "<group>"; };
+		A2009C01 /* GameSetupShare.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameSetupShare.swift; sourceTree = "<group>"; };
+		A2009C04 /* SteamAchievements.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SteamAchievements.swift; sourceTree = "<group>"; };
+		A200CA01 /* ClaudeHelp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeHelp.swift; sourceTree = "<group>"; };
 		A2000208 /* GameProfiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameProfiles.swift; sourceTree = "<group>"; };
 		A2000911 /* GameRecommendations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameRecommendations.swift; sourceTree = "<group>"; };
 		A2000912 /* GameRecommendationsApply.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameRecommendationsApply.swift; sourceTree = "<group>"; };
@@ -578,9 +607,19 @@
 				A2000531 /* SteamGames.swift */,
 				A2007B02 /* ItchAPI.swift */,
 				A2007B03 /* ItchArchive.swift */,
+				A2007B30 /* itch_7z.c */,
+				A2007B31 /* itch_7z.h */,
 				A2007B04 /* ItchLibrary.swift */,
 				A2007B05 /* ItchGames.swift */,
+				A2006B01 /* EALibrary.swift */,
+				A2006B02 /* EAGames.swift */,
+				A2006B03 /* EAAPI.swift */,
+				A2006B04 /* EAFormats.swift */,
+				A2006B05 /* EADownloader.swift */,
+				A2006B06 /* EALicense.swift */,
+				A2006B07 /* EAService.swift */,
 				A2000900 /* LiquidMetal.metal */,
+				A2009C03 /* Localizable.xcstrings */,
 				A2000910 /* Assets.xcassets */,
 				A2000902 /* GlassSkin.swift */,
 				A2000903 /* LiquidMetalSkin.metal */,
@@ -663,8 +702,12 @@
 				A2000201 /* LogTail.swift */,
 				A2000202 /* FPSOverlay.swift */,
 				A2000213 /* LibraryBCD.swift */,
+				A2007C01 /* GPUCards.swift */,
 				A2000914 /* LibraryPrefs.swift */,
 				A2000990 /* GameIniFiles.swift */,
+				A2009C01 /* GameSetupShare.swift */,
+				A2009C04 /* SteamAchievements.swift */,
+				A200CA01 /* ClaudeHelp.swift */,
 				A2000208 /* GameProfiles.swift */,
 				A2000911 /* GameRecommendations.swift */,
 				A2000912 /* GameRecommendationsApply.swift */,
@@ -709,6 +752,7 @@
 				B2000061 /* AppleSignIn.swift */,
 				B2000042 /* MadeiraRPPairing.h */,
 				B2000004 /* madeira-jit.js */,
+				B200CA02 /* Give-to-Claude-with-log-and-cfg.txt */,
 				B2000051 /* Madeira JIT.shortcut */,
 				A2000021 /* nls */,
 				A2000033 /* aarch64-windows */,
@@ -906,6 +950,11 @@
 			knownRegions = (
 				en,
 				Base,
+				de,
+				es,
+				ko,
+				"pt-BR",
+				ru,
 			);
 			mainGroup = A4000001;
 			productRefGroup = A4000003 /* Products */;
@@ -938,8 +987,10 @@
 				A1000082 /* x86_64-opengl in Resources */,
 				A1000040 /* prefix-template.tar.gz in Resources */,
 				A1000094 /* cacert.pem in Resources */,
+				A1009C03 /* Localizable.xcstrings in Resources */,
 				A1000910 /* Assets.xcassets in Resources */,
 				B1000004 /* madeira-jit.js in Resources */,
+				B100CA02 /* Give-to-Claude-with-log-and-cfg.txt in Resources */,
 				B1000051 /* Madeira JIT.shortcut in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1018,8 +1069,16 @@
 				A1000531 /* SteamGames.swift in Sources */,
 				A1007B02 /* SwiftItch/ItchAPI.swift in Sources */,
 				A1007B03 /* SwiftItch/ItchArchive.swift in Sources */,
+				A1007B30 /* SwiftItch/itch_7z.c in Sources */,
 				A1007B04 /* ItchLibrary.swift in Sources */,
 				A1007B05 /* ItchGames.swift in Sources */,
+				A1006B01 /* EALibrary.swift in Sources */,
+				A1006B02 /* EAGames.swift in Sources */,
+				A1006B03 /* SwiftEA/EAAPI.swift in Sources */,
+				A1006B04 /* SwiftEA/EAFormats.swift in Sources */,
+				A1006B05 /* SwiftEA/EADownloader.swift in Sources */,
+				A1006B06 /* SwiftEA/EALicense.swift in Sources */,
+				A1006B07 /* SwiftEA/EAService.swift in Sources */,
 				A1000900 /* LiquidMetal.metal in Sources */,
 				A1000902 /* GlassSkin.swift in Sources */,
 				A1000903 /* LiquidMetalSkin.metal in Sources */,
@@ -1098,8 +1157,12 @@
 				A1000201 /* LogTail.swift in Sources */,
 				A1000202 /* FPSOverlay.swift in Sources */,
 				A1000213 /* LibraryBCD.swift in Sources */,
+				A1007C01 /* GPUCards.swift in Sources */,
 				A1000914 /* LibraryPrefs.swift in Sources */,
 				A1000990 /* GameIniFiles.swift in Sources */,
+				A1009C01 /* GameSetupShare.swift in Sources */,
+				A1009C04 /* SteamAchievements.swift in Sources */,
+				A100CA01 /* ClaudeHelp.swift in Sources */,
 				A1000208 /* GameProfiles.swift in Sources */,
 				A1000911 /* GameRecommendations.swift in Sources */,
 				A1000912 /* GameRecommendationsApply.swift in Sources */,

@@ -195,7 +195,8 @@ and check-frontend fails if a setting is hidden from it. A profile holds:
   other than the default exports `MADEIRA_CPU_COUNT` (wine) or
   `DXMT_D9_ANISO_LIMIT` (DXMT); the defaults export nothing. AVX above, frame
   generation below and the game's own config lines are the library's other
-  engine switches;
+  engine switches. The anisotropic filtering picker shows only for a game that
+  already has a limit, so it can be set back to Application default;
 - **Frame generation (experimental)**, off by default: exports
   `MADEIRA_FRAMEGEN=1`, and DXMT's present path (D3D11 and D3D12 alike) shows a
   MetalFX-interpolated frame between every two game frames; FPS limits do not
@@ -515,6 +516,20 @@ Log tags: `[onboarding]` (`shown reason=… steps=…`, `step=…`, `done`,
 `skipped`), `[steam-games]` (counts and App IDs), `[library-sections]`
 (`native-steam=… sections=… collapse=…`, flags only) and the library and download
 tags of `docs/STEAM_LIBRARY.md`. No account name, token or path is logged.
+
+## Memory+ status
+
+The **Memory+** badge in Settings reads the signed app's Increased Memory
+Limit entitlement (`com.apple.developer.kernel.increased-memory-limit`).
+It is separate from JIT and cannot be enabled by an in-app switch. When it is
+unavailable, the status explains that the signing tool must grant this
+capability to Madeira. Sign and install the updated copy over the existing
+app; do not delete the app and its game data to change this status.
+
+A green badge confirms the entitlement, not that every game will launch or
+that a particular amount of memory is available. The signing-method-specific
+reports in [issue #256](https://github.com/willfaust/Madeira/issues/256) are
+individual results, not a universal workaround.
 
 ## Controllers
 

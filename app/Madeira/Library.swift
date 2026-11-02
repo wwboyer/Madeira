@@ -6,6 +6,13 @@ import ImageIO
 import Combine
 import Metal
 
+/// A text that is built in code (a note, a picker title, a status or an error) in the
+/// device's language, from Localizable.xcstrings; English when the catalog lacks it.
+/// Texts written straight into Text("...")/Button("...") are looked up by SwiftUI already.
+func L(_ text: String) -> String {
+    Bundle.main.localizedString(forKey: text, value: text, table: "Localizable")
+}
+
 // ============================================================================
 // Library front end.
 //
@@ -308,6 +315,11 @@ struct LibraryEntry: Codable, Identifiable {
     /// its program inside C:\Program Files\Epic Games, and each start adds Epic's
     /// sign-in arguments (EpicLibrary.launchArguments) for that launch only.
     var epicAppName: String?
+    /// An EA app game (EALibrary.swift): its offer id. `relativePath` is then its
+    /// program inside C:\Program Files\EA Games, and each start first gets the game's
+    /// licence, the EA app's environment and Madeira's stand-in for the EA app's
+    /// local service (EALibrary.prepareLaunch).
+    var eaOfferID: String?
     /// An Epic game with an official way to start without anti-cheat
     /// (epicAntiCheatOffProgram): nil or true starts that program.
     /// The anti-cheat cannot run in Wine on iOS, so on is the default.
@@ -1177,7 +1189,8 @@ final class LibraryModel: ObservableObject {
         if let i = next.firstIndex(where: { $0.id == entry.id }) ??
             next.firstIndex(where: { entry.steamAppID != nil && $0.steamAppID == entry.steamAppID }) ??
             next.firstIndex(where: { entry.itchGameID != nil && $0.itchGameID == entry.itchGameID }) ??
-            next.firstIndex(where: { entry.epicAppName != nil && $0.epicAppName == entry.epicAppName }) {
+            next.firstIndex(where: { entry.epicAppName != nil && $0.epicAppName == entry.epicAppName }) ??
+            next.firstIndex(where: { entry.eaOfferID != nil && $0.eaOfferID == entry.eaOfferID }) {
             // A details sheet may predate an asynchronous metadata refresh.
             if (next[i].metadataChecked ?? .distantPast) > (entry.metadataChecked ?? .distantPast) {
                 entry.folderBytes = next[i].folderBytes; entry.graphicsAPI = next[i].graphicsAPI
@@ -1271,6 +1284,40 @@ final class LibraryModel: ObservableObject {
     func removeItch(gameID: Int) {
         guard entries.contains(where: { $0.itchGameID == gameID }) else { return }
         persist(entries.filter { $0.itchGameID != gameID })
+    }
+    /// An EA download finished (EALibrary): the game gets its library entry, or an
+    /// existing one follows the new build's program and keeps its title, artwork and
+    /// settings. Arguments follow the build's manifest unless the player changed them.
+    /// A new entry gets EA's cover art as its cover image.
+    @MainActor
+    func upsertEA(_ game: EAInstalledGame, previous: EAInstalledGame?, cover: URL?) async {
+        guard !readOnly else { return }
+        let existing = entries.first { $0.eaOfferID == game.offerID }
+        var entry = existing ?? LibraryEntry(title: game.title, relativePath: game.programPath, bits: 0)
+        entry.eaOfferID = game.offerID
+        entry.relativePath = game.programPath
+        entry.folderBytes = game.installBytes
+        if existing == nil || entry.arguments == (previous?.arguments ?? "") { entry.arguments = game.arguments }
+        let program = Self.drive.appendingPathComponent(game.programPath)
+        if let inspected = await Task.detached(priority: .utility, operation: { try? LibraryModel.inspect(program) }).value {
+            entry.bits = inspected.bits
+            entry.graphicsAPI = inspected.graphicsAPI ?? entry.graphicsAPI
+        }
+        if entry.coverFile == nil, let cover, let jpeg = await Self.storeCover(cover) {
+            let dir = Self.documents.appendingPathComponent("madeira-art", isDirectory: true)
+            let name = entry.id.uuidString + ".jpg"
+            if (try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)) != nil,
+               (try? jpeg.write(to: dir.appendingPathComponent(name), options: .atomic)) != nil {
+                entry.coverFile = name
+            }
+        }
+        entry.metadataChecked = nil
+        save(entry)
+    }
+    /// An EA game was uninstalled: its entry goes with its files.
+    func removeEA(offerID: String) {
+        guard entries.contains(where: { $0.eaOfferID == offerID }) else { return }
+        persist(entries.filter { $0.eaOfferID != offerID })
     }
     /// An Epic download finished (EpicLibrary): the game gets its library entry, or an
     /// existing one follows the new build's program and keeps its title, artwork and
@@ -1475,8 +1522,11 @@ final class LibraryModel: ObservableObject {
     static func relativeToDrive(_ url: URL) -> String? {
         let path = url.resolvingSymlinksInPath().standardizedFileURL.path
         if path.hasPrefix(drive.path + "/") { return String(path.dropFirst(drive.path.count + 1)) }
-        for root in ExternalDrives.shared.roots where path.hasPrefix(root.path + "/") {
-            return "External/" + root.name + "/" + path.dropFirst(root.path.count + 1)
+        for root in ExternalDrives.shared.roots {
+            if path == root.path { return "External/" + root.name }
+            if path.hasPrefix(root.path + "/") {
+                return "External/" + root.name + "/" + path.dropFirst(root.path.count + 1)
+            }
         }
         return nil
     }
@@ -1484,13 +1534,13 @@ final class LibraryModel: ObservableObject {
         let url = drive.appendingPathComponent(relative).resolvingSymlinksInPath().standardizedFileURL
         guard relativeToDrive(url) != nil, programExtensions.contains(url.pathExtension.lowercased()),
               FileManager.default.fileExists(atPath: url.path) else {
-            throw LibraryError.message("Choose an executable (.exe, .bat or .cmd) inside drive_c.")
+            throw LibraryError.message(L("Choose an executable (.exe, .bat or .cmd) inside drive_c."))
         }
         return url
     }
     static func inspect(_ url: URL) throws -> LibraryEntry {
         guard let relative = relativeToDrive(url) else {
-            throw LibraryError.message("The executable must be inside drive_c or an external drive.")
+            throw LibraryError.message(L("The executable must be inside drive_c or an external drive."))
         }
         if ["bat", "cmd"].contains(url.pathExtension.lowercased()) {
             // ml1163: a batch file has no PE header. Like every entry it starts
@@ -1501,14 +1551,14 @@ final class LibraryModel: ObservableObject {
         }
         let h = try FileHandle(forReadingFrom: url); defer { try? h.close() }
         let dos = try h.read(upToCount: 64) ?? Data()
-        guard dos.count == 64, dos[0] == 0x4d, dos[1] == 0x5a else { throw LibraryError.message("This is not a Windows executable.") }
+        guard dos.count == 64, dos[0] == 0x4d, dos[1] == 0x5a else { throw LibraryError.message(L("This is not a Windows executable.")) }
         let offset = (0..<4).reduce(UInt64(0)) { $0 | (UInt64(dos[60 + $1]) << ($1 * 8)) }
-        guard offset >= 64, offset < 16 * 1024 * 1024 else { throw LibraryError.message("Invalid executable header.") }
+        guard offset >= 64, offset < 16 * 1024 * 1024 else { throw LibraryError.message(L("Invalid executable header.")) }
         try h.seek(toOffset: offset)
         let pe = try h.read(upToCount: 6) ?? Data()
-        guard pe.count == 6, Array(pe.prefix(4)) == [0x50, 0x45, 0, 0] else { throw LibraryError.message("Missing PE header.") }
+        guard pe.count == 6, Array(pe.prefix(4)) == [0x50, 0x45, 0, 0] else { throw LibraryError.message(L("Missing PE header.")) }
         let machine = Int(pe[4]) | Int(pe[5]) << 8
-        guard machine == 0x14c || machine == 0x8664 else { throw LibraryError.message("Only x86 and x64 executables are supported.") }
+        guard machine == 0x14c || machine == 0x8664 else { throw LibraryError.message(L("Only x86 and x64 executables are supported.")) }
         let name = url.deletingPathExtension().lastPathComponent.replacingOccurrences(of: "_", with: " ")
         var entry = LibraryEntry(title: name, relativePath: relative, bits: machine == 0x14c ? 32 : 64)
         entry.graphicsAPI = graphicsImports(url)
@@ -1594,7 +1644,7 @@ final class LibraryModel: ObservableObject {
     /// are still there and init_registry aborts on "\Registry". Madeira asks for
     /// a restart instead. MADEIRA_ONE_SESSION_PER_RUN=0 lets the launch go ahead.
     static var sessionsThisRun = 0
-    static let restartMessage = "Restart Madeira to start another game: swipe Madeira away in the app switcher, then open it again."
+    static let restartMessage = L("Restart Madeira to start another game: swipe Madeira away in the app switcher, then open it again.")
     @Published var restartNotice: String? { didSet { if restartNotice != nil { preparing = nil } } }
     /// CS_DEBUGGED is set but no debugger is attached (JIT was enabled outside
     /// Madeira): the text of the alert that offers Madeira's own Enable JIT.
@@ -1730,19 +1780,19 @@ final class LibraryModel: ObservableObject {
         if current != nil, !forceCloseOffered, let asked = quitRequestedAt,
            Date().timeIntervalSince(asked) > Self.forceCloseAfter {
             forceCloseOffered = true
-            sessionMessage = "The game did not close. Open the menu to force-close Madeira."
+            sessionMessage = L("The game did not close. Open the menu to force-close Madeira.")
             fputs("[frontend] still running \(Int(Self.forceCloseAfter)) s after the close request; force close offered\n", stderr)
         }
         if current != nil, dockGameEndedAt == nil, !launching, DockStartScreen.shared.active,
            MainActor.assumeIsolated({ MadeiraDock.pollReport().result }) == 0 {
             dockGameEndedAt = Date()
-            sessionMessage = "The game has closed. Returning to the library…"
+            sessionMessage = L("The game has closed. Returning to the library…")
             winios_close_desktop()
             fputs("[frontend] the Dock game ended and Steam shut down; closing the desktop\n", stderr)
         }
         if current != nil, !dockGameEnded, let ended = dockGameEndedAt, Date().timeIntervalSince(ended) > Self.forceCloseAfter {
             dockGameEnded = true; forceCloseOffered = true; menu = true
-            sessionMessage = "The game has closed."
+            sessionMessage = L("The game has closed.")
             fputs("[frontend] the desktop is still up \(Int(Self.forceCloseAfter)) s after the Dock game ended; Close Madeira offered\n", stderr)
         }
         // The first frame gives Aspect and Fill height the drawable's shape.
@@ -1758,7 +1808,7 @@ final class LibraryModel: ObservableObject {
         guard current != nil && !sawProcess else { return }
         finish()
         if offerJIT, let reason { jitNotice = reason }
-        else { error = reason ?? "The session could not start. Check the diagnostic log and JIT status." }
+        else { error = reason ?? L("The session could not start. Check the diagnostic log and JIT status.") }
     }
     /// Both flags change in one transaction without animation: the animated
     /// removal of a scrolling view with live content could leave the starting
@@ -1821,7 +1871,7 @@ final class LibraryModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
             winios_post_key(0x73, 0); winios_post_key(0x12, 0)
         }
-        sessionMessage = "Close requested. Confirm any in-game exit dialog."
+        sessionMessage = L("Close requested. Confirm any in-game exit dialog.")
         menu = false
         fputs("[frontend] graceful close requested\n", stderr)
     }
@@ -2024,7 +2074,7 @@ struct LibraryTitleText: View {
                 .foregroundStyle(jit ? Color.accentColor : Color.primary)
                 .contentTransition(.symbolEffect(.replace))
                 .alignmentGuide(.firstTextBaseline) { d in d.height / 2 + LibraryHeaderAlignment.titleFont().capHeight / 2 }
-                .accessibilityLabel(jit ? "JIT enabled" : "JIT not enabled")
+                .accessibilityLabel(jit ? L("JIT enabled") : L("JIT not enabled"))
         }
         .font(.largeTitle.bold())
         .fixedSize()
@@ -2797,12 +2847,11 @@ struct LibraryBadges: View {
     @ViewBuilder private var size: some View {
         if let text = Self.sizeText(entry) { badge(text) }
     }
-    /// The format pills' texts, in order (also the zoomable grid's measured labels).
+    /// The format pills' texts, in order (also the zoomable grid's measured labels). No bitness or graphics API pills: both were
+    /// read from the program before it ran and were often wrong.
     static func formatTexts(_ entry: LibraryEntry, note: String?) -> [String] {
         var texts: [String] = []
-        if entry.bits == 32 || entry.bits == 64 { texts.append("\(entry.bits)-bit") }
         if entry.isBatch { texts.append("Batch") }   // ml1163
-        if let api = LibraryRendererBadge.compact(entry.graphicsAPI) { texts.append(LibraryRendererBadge.display(api)) }
         if let note { texts.append(note) }
         return texts
     }
@@ -2824,12 +2873,19 @@ struct LibraryStatus: View {
     @State private var memory = false
     let ticks = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
     var body: some View {
-        HStack(spacing: 8) {
-            badge("JIT", jit)
-            badge("Memory+", memory)
-            if jit && memory {
-                Text("Ready to play").font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
-                    .padding(.leading, 4)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                badge("JIT", jit)
+                badge("Memory+", memory)
+                if jit && memory {
+                    Text("Ready to play").font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
+                        .padding(.leading, 4)
+                }
+            }
+            if !memory {
+                Text("Memory+ requires the Increased Memory Limit entitlement in this signed copy of Madeira. Enabling JIT does not grant it. Check that your signing tool enables this capability for Madeira, then sign and install the updated app without deleting your existing installation.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .onAppear { update() }.onReceive(ticks) { _ in update() }
@@ -2979,9 +3035,9 @@ enum LibraryGrouping {
             let today = calendar.startOfDay(for: now)
             let week = calendar.date(byAdding: .day, value: -6, to: today) ?? today
             let month = calendar.date(byAdding: .day, value: -29, to: today) ?? today
-            groups = [Group(id: "today", title: "Today", games: []), Group(id: "week", title: "Past 7 days", games: []),
-                      Group(id: "month", title: "Past 30 days", games: []), Group(id: "earlier", title: "Earlier", games: []),
-                      Group(id: "never", title: "Never played", games: [])]
+            groups = [Group(id: "today", title: L("Today"), games: []), Group(id: "week", title: L("Past 7 days"), games: []),
+                      Group(id: "month", title: L("Past 30 days"), games: []), Group(id: "earlier", title: L("Earlier"), games: []),
+                      Group(id: "never", title: L("Never played"), games: [])]
             for game in games {
                 let index: Int
                 if let played = game.lastPlayed {
@@ -3196,7 +3252,7 @@ struct LibraryView: View {
         // Steam games are listed in their own section (SteamGames.swift), and so is
         // FINAL FANTASY XIV (FFXIVLibrary.swift).
         let ffxivSection = FFXIVLibrary.enabled
-        let visible = model.entries.filter { $0.desktop != true && $0.listedInLibrary && $0.steamAppID == nil && $0.epicAppName == nil && $0.itchGameID == nil && !(ffxivSection && FFXIVLibrary.isFFXIV($0)) && (search.isEmpty || $0.title.localizedCaseInsensitiveContains(search)) }
+        let visible = model.entries.filter { $0.desktop != true && $0.listedInLibrary && $0.steamAppID == nil && $0.epicAppName == nil && $0.itchGameID == nil && $0.eaOfferID == nil && !(ffxivSection && FFXIVLibrary.isFFXIV($0)) && (search.isEmpty || $0.title.localizedCaseInsensitiveContains(search)) }
         if sort == "added" { return visible.reversed() }
         return visible.sorted {
             if sort == "played", $0.lastPlayed != $1.lastPlayed { return ($0.lastPlayed ?? .distantPast) > ($1.lastPlayed ?? .distantPast) }
@@ -3244,7 +3300,7 @@ struct LibraryView: View {
         // The system search field (Liquid Glass on iOS 26) in the title's place, left
         // of the library's buttons, on both tabs; each tab keeps its own text.
         .background(LibraryNavSearch(text: tab == 0 ? $search : $settingsSearch,
-                                     placeholder: tab == 0 ? "Search your library" : "Search settings")
+                                     placeholder: tab == 0 ? L("Search your library") : L("Search settings"))
             .frame(width: 0, height: 0))
         // Each tab is hosted by the tab bar controller, so a toolbar set inside a tab
         // would not reach the navigation bar: the library's lives here.
@@ -3260,13 +3316,15 @@ struct LibraryView: View {
         // On the tab view, not inside one tab's page: an alert attached to the Library
         // page cannot present while Settings is showing, so an error raised there (its
         // Enable JIT, for one) waited until the Library tab came back.
-        .alert(jitProblem == nil ? "Library" : "Couldn't Enable JIT",
+        .alert(jitProblem == nil ? L("Library") : L("Couldn't Enable JIT"),
                isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             if let jitProblem { jitConnectionActions(jitProblem, retry: enableJIT) { model.error = nil } }
             Button("OK", role: .cancel) { model.error = nil }
         } message: { Text(model.error ?? "") }
         // Signing that runs out: the refresh, and the offer when it could not run (SigningRefresh.swift).
         .modifier(SigningRefreshOffer())
+        // A setup opened from Files, a chat or a madeira://setup link (GameSetupShare.swift).
+        .modifier(GameSetupInboxPresenter())
         .fullScreenCover(isPresented: $onboarding.presented) { OnboardingView() }
         .onAppear {
             // An ended desktop session's surface never stays over the library.
@@ -3370,10 +3428,14 @@ struct LibraryView: View {
                 JITSettingsSection()
             }
             if SigningRefresh.enabled, settingsShow("signing", "expires", "refresh", "Apple", "sign-in", "7 days") { SigningSettingsSection() }
-            if settingsShow("diagnostics", "extended logging", "logging", "log") {
+            if settingsShow("diagnostics", "extended logging", "logging", "log", "help", "Claude") {
                 Section {
                     Toggle("Extended logging", isOn: $input.diagnostics)
-                } header: { Text("Diagnostics") }
+                    // ClaudeHelp.swift: the fixes guide, logs and madeira.cfg to a chat.
+                    ClaudeHelpButton(entry: nil)
+                } header: { Text("Diagnostics") } footer: {
+                    Text("Get Help from Claude shares a guide to known fixes, the last logs and madeira.cfg. For one game's config too, use the button on its Game details page.")
+                }
             }
             if settingsShow("pointer", "mouse", "cursor", "touch", "trackpad", "sensitivity") {
                 Section("Pointer") { LibraryPointerSettings() }
@@ -3394,6 +3456,9 @@ struct LibraryView: View {
             if ItchLibrary.enabled, settingsShow("itch.io", "itch", "API key", "sign in", "account") { ItchSettingsSection() }
             if EpicLibrary.enabled, settingsShow("Epic", "Epic Games", "sign in", "account") {
                 EpicSettingsSection(open: { settingsSheet = $0 })
+            }
+            if EALibrary.enabled, settingsShow("EA", "EA app", "Origin", "sign in", "account") {
+                EASettingsSection(open: { settingsSheet = $0 })
             }
             if settingsShow(".NET", "Mono", "Wine Mono", "framework", "download") { WineMonoSettingsSection() }
             if VCRedistModel.enabled, settingsShow("Visual C++", "C++", "runtime", "redist", "vcredist", "download") { VCRedistSettingsSection() }
@@ -3448,6 +3513,7 @@ struct LibraryView: View {
             case .allSettings: AllSettingsView()
             case .steamSignIn: SteamSignInView()
             case .epicSignIn: EpicSignInView()
+            case .eaSignIn: EASignInView()
             case .dock: MadeiraDockView(start: startDock)
             }
         }
@@ -3488,14 +3554,14 @@ struct LibraryView: View {
                 if SteamGamesSection.shown {
                     VStack(alignment: .leading, spacing: 14) {
                         // Games are added with the + in the navigation bar.
-                        LibrarySectionHeader(title: "Other games", count: entries.count,
+                        LibrarySectionHeader(title: L("Other games"), count: entries.count,
                                              collapsed: SteamGamesSection.collapsible ? $hideOthers : nil) { EmptyView() }
                         if hideOthers && SteamGamesSection.collapsible {
                             EmptyView()
                         } else if entries.isEmpty {
                             Text(search.isEmpty
                                  ? "Copy a game's folder into Madeira › wine › drive_c with the Files app, then tap + and choose its .exe."
-                                 : "No other games match your search.")
+                                 : L("No other games match your search."))
                                 .foregroundStyle(.secondary)
                         } else {
                             cells(entries, width: viewport.size.width)
@@ -3505,7 +3571,7 @@ struct LibraryView: View {
                         SteamGamesSection(search: search, layout: layout, sort: sort, width: viewport.size.width,
                                           part: steamFirst ? .notInstalled : .all, open: { selected = $0 })
                     }
-                } else if model.entries.filter({ $0.desktop != true && $0.listedInLibrary && $0.steamAppID == nil && $0.epicAppName == nil && $0.itchGameID == nil }).isEmpty {
+                } else if model.entries.filter({ $0.desktop != true && $0.listedInLibrary && $0.steamAppID == nil && $0.epicAppName == nil && $0.itchGameID == nil && $0.eaOfferID == nil }).isEmpty {
                     ContentUnavailableView("Make yourself at home", systemImage: "gamecontroller", description: Text("Copy a game's folder into Madeira › wine › drive_c with the Files app, then tap + and choose its .exe."))
                 } else {
                     cells(entries, width: viewport.size.width)
@@ -3519,6 +3585,11 @@ struct LibraryView: View {
                 // Game details page, the others their download sheet.
                 if EpicLibrary.enabled {
                     EpicGamesSection(search: search, layout: layout, width: viewport.size.width, open: { selected = $0 })
+                }
+                // The account's EA app games (EAGames.swift): installed ones open their
+                // Game details page, the others their download sheet.
+                if EALibrary.enabled {
+                    EAGamesSection(search: search, layout: layout, width: viewport.size.width, open: { selected = $0 })
                 }
                 }
             }
@@ -3792,6 +3863,12 @@ struct LibraryDetail: View {
     @State private var squareEnixUpdate: SquareEnixUpdate?
     @ObservedObject private var ffxiv = FFXIVLibrary.shared
     @State private var copiedLink = false
+    /// Share Setup and Apply Shared Setup (GameSetupShare.swift).
+    @State private var shareSetup = false
+    @State private var askSetupSource = false
+    @State private var importSetup = false
+    @State private var setupToApply: GameSetupInbox.Pending?
+    @State private var setupError: String?
     /// Where Play is on screen: the starting screen grows out of it (LaunchCurtain).
     @State private var playFrame: CGRect = .zero
     /// Settings › Sync engine, read when the details open: the fastsync switches
@@ -3838,6 +3915,11 @@ struct LibraryDetail: View {
         model.save(entry)
         reloadBCD()
     }
+    /// Apply Shared Setup: reads the setup, then shows what it holds before applying.
+    private func readSetup(_ read: () throws -> GameSetup) {
+        do { setupToApply = GameSetupInbox.Pending(setup: try read()) }
+        catch { setupError = error.localizedDescription }
+    }
     /// "None", or how many keys this game's own config sets.
     static func configSummary(_ config: String?) -> String {
         let count = MadeiraConfig.parse(config ?? "").count
@@ -3851,24 +3933,37 @@ struct LibraryDetail: View {
         // An itch.io game starts once its files are complete (ItchLibrary).
         if let game = entry.itchGameID {
             if ItchLibrary.shared.downloads[game] != nil {
-                error = "This game's download has not finished. Resume it and wait for it to complete before playing."; return
+                error = L("This game's download has not finished. Resume it and wait for it to complete before playing."); return
             }
             if ItchLibrary.shared.installed[game] == nil {
-                error = "This itch.io game is no longer installed. Install it again from the itch.io section."; return
+                error = L("This itch.io game is no longer installed. Install it again from the itch.io section."); return
+            }
+        }
+        // An EA game starts once its files are complete and the account is signed in
+        // (EALibrary.prepareLaunch gets its licence and the EA app's environment).
+        if let offer = entry.eaOfferID {
+            if EALibrary.shared.downloads[offer] != nil {
+                error = "This game's download has not finished. Resume it and wait for it to complete before playing."; return
+            }
+            if EALibrary.shared.installed[offer] == nil {
+                error = "This EA game is no longer installed. Install it again from the EA app section."; return
+            }
+            if !EALibrary.shared.signedIn {
+                error = "Sign in to EA in Settings › EA app first. An EA game needs the sign-in to get its licence and start."; return
             }
         }
         // An Epic game starts once its files are complete (EpicLibrary).
         if let app = entry.epicAppName {
             if EpicLibrary.shared.downloads[app] != nil {
-                error = "This game's download has not finished. Resume it and wait for it to complete before playing."; return
+                error = L("This game's download has not finished. Resume it and wait for it to complete before playing."); return
             }
             if EpicLibrary.shared.installed[app] == nil {
-                error = "Epic Games no longer lists this game as installed. Install it again from the Epic Games section."; return
+                error = L("Epic Games no longer lists this game as installed. Install it again from the Epic Games section."); return
             }
         }
         if let appID = entry.steamAppID {
             if SteamOwnedLibrary.shared.downloads[appID] != nil {
-                error = "This game's update has not finished. Resume it and wait for it to complete before playing."; return
+                error = L("This game's update has not finished. Resume it and wait for it to complete before playing."); return
             }
             let installed = SteamGamesModel.shared.games.first { $0.id == appID }?.installed ?? false
             if entry.startsSteamGameDirectly {
@@ -3924,7 +4019,7 @@ struct LibraryDetail: View {
     }
     /// The pages the details page links to (iOS Settings style), each with its own Form.
     enum Page: Hashable {
-        case display, controls, launch, compatibility, steam, cloud, itch, library, iniFiles, advanced
+        case display, controls, launch, compatibility, steam, cloud, achievements, itch, library, iniFiles, advanced
         var title: String {
             switch self {
             case .display: return "Display"
@@ -3935,6 +4030,7 @@ struct LibraryDetail: View {
             case .cloud: return "Steam Cloud"
             case .workshop: return "Steam Workshop"
             case .itch: return "itch.io"
+            case .achievements: return "Achievements"
             case .library: return "Library details"
             case .iniFiles: return "Settings files"
             case .advanced: return "Advanced"
@@ -3950,6 +4046,7 @@ struct LibraryDetail: View {
             case .cloud: return "icloud"
             case .workshop: return "square.stack.3d.up"
             case .itch: return "bag"
+            case .achievements: return "trophy"
             case .library: return "info.circle"
             case .iniFiles: return "doc.text"
             case .advanced: return "wrench.and.screwdriver"
@@ -3964,7 +4061,7 @@ struct LibraryDetail: View {
     private var pageGroups: [[Page]] {
         let launch = entry.usesLaunchOptions || entry.desktop != true
         let steam: [Page] = entry.steamAppID == nil ? (entry.itchGameID != nil ? [.itch] : [])
-            : (SteamOwnedLibrary.cloudEnabled ? [.steam, .cloud] : [.steam])
+            : (SteamOwnedLibrary.cloudEnabled ? [.steam, .cloud, .achievements] : [.steam, .achievements])
                 + (SteamOwnedLibrary.workshopEnabled && Self.showsWorkshop(entry.steamAppID) ? [.workshop] : [])
         let tuning: [Page] = launch ? [.display, .controls, .launch, .compatibility] : [.display, .controls, .compatibility]
         let more: [Page] = entry.desktop == true ? [.advanced] : [.library, .iniFiles, .advanced]
@@ -3981,7 +4078,7 @@ struct LibraryDetail: View {
         switch page {
         case .display: return entry.metalFXUpscale.map { "\(entry.resolution) · MetalFX \($0 == 2 ? "2" : "1.5")×" } ?? entry.resolution
         case .controls: return entry.controllerMode == "keys" ? "Keyboard and mouse" : entry.controllerMode == "dinput" ? "XInput and DirectInput" : nil
-        case .launch: return entry.usesLaunchOptions ? (entry.runsInDesktop ? "Wine desktop" : "Directly") : nil
+        case .launch: return entry.usesLaunchOptions ? (entry.runsInDesktop ? L("Wine desktop") : L("Directly")) : nil
         case .steam: return entry.startsSteamGameDirectly ? "The game" : "Madeira Dock"
         case .advanced: return Self.configSummary(bcd.configText)   // madeira-bcd: the game's own config file
         case .iniFiles:
@@ -4005,6 +4102,7 @@ struct LibraryDetail: View {
                     SteamWorkshopSections(appID: UInt32(appID), title: entry.title)
                 }
             case .itch: ItchEntrySection(entry: $entry) { leaving = true; dismiss() }
+            case .achievements: if let appID = entry.steamAppID { SteamAchievementsSection(appID: appID) }
             case .library: libraryPage
             case .iniFiles: GameIniFilesSection(windowsPath: entry.windowsPath, gameFolder: iniGameFolder)
             case .advanced: advancedPage
@@ -4132,7 +4230,7 @@ struct LibraryDetail: View {
                 Text(entry.commandPreview)
                     .font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
             } header: { Text("Launch arguments") } footer: {
-                Text(entry.steamAppID == nil ? "Passed on every start. Above: the full command." : "Steam adds these to the selected launch option on every start.")
+                Text(entry.steamAppID == nil ? L("Passed on every start. Above: the full command.") : L("Steam adds these to the selected launch option on every start."))
             }
         }
     }
@@ -4144,33 +4242,47 @@ struct LibraryDetail: View {
                 Text("Reduced (faster)").tag(LibraryEntry.X87Precision.reduced)
                 Text("Full (accurate)").tag(LibraryEntry.X87Precision.full)
             } label: {
-                compatLabel("x87 precision", "Automatic is fast for 32-bit games and accurate for 64-bit ones. Full can halve a 32-bit game's frame rate.")
+                compatLabel(L("x87 precision"), L("Automatic is fast for 32-bit games and accurate for 64-bit ones. Full can halve a 32-bit game's frame rate."))
             }
             Toggle(isOn: Binding(get: { entry.largeReservations ?? false }, set: { entry.largeReservations = $0 ? true : nil })) {
-                compatLabel("Large memory reservations", "For requests of 64 GB or more. Backs up to 16 GB by default.")
+                compatLabel(L("Large memory reservations"), L("For requests of 64 GB or more. Backs up to 16 GB by default."))
             }
             // madeira-bcd: AVX, NVIDIA and Wine's C++ runtime are LibraryPrefs, which
             // BCDLaunch exports at every launch (reloadBCD / migrateEntryOptions).
             Toggle(isOn: Binding(get: { bcd.avx }, set: { on in bcd.avx = on; LibraryPrefs.setAVX(on, for: entry.windowsPath) })) {
-                compatLabel("AVX and AVX2", "For games that quit with c000001d")
+                compatLabel(L("AVX and AVX2"), L("For games that quit with c000001d"))
             }
             // Exported for this game only when chosen (applyEnvironment).
             Picker("CPU cores reported", selection: Binding(get: { entry.cpuCount ?? 0 }, set: { entry.cpuCount = $0 == 0 ? nil : $0 })) {
                 Text("Automatic").tag(0)
                 ForEach([1, 2, 4, 6], id: \.self) { Text("\($0)").tag($0) }
             }
-            Picker("D3D9 anisotropic filtering", selection: Binding(get: { entry.anisotropyLimit ?? 0 }, set: { entry.anisotropyLimit = $0 == 0 ? nil : $0 })) {
-                Text("Application default").tag(0)
-                ForEach([1, 2, 4, 8], id: \.self) { Text("Up to \($0)×").tag($0) }
+            // Hidden: an old build's switch the D3D9 path no longer needs. A game that has a limit still exports it, and
+            // keeps the picker so it can go back to Application default.
+            if entry.anisotropyLimit != nil {
+                Picker("D3D9 anisotropic filtering", selection: Binding(get: { entry.anisotropyLimit ?? 0 }, set: { entry.anisotropyLimit = $0 == 0 ? nil : $0 })) {
+                    Text("Application default").tag(0)
+                    ForEach([1, 2, 4, 8], id: \.self) { Text("Up to \($0)×").tag($0) }
+                }
             }
-            Toggle(isOn: Binding(get: { bcd.nvidia }, set: { on in bcd.nvidia = on; LibraryPrefs.setNvidia(on, for: entry.windowsPath) })) {
-                compatLabel("Report an NVIDIA GPU", "For \"no graphics card\" errors")
+            // GPUCards.swift: a chosen card replaces the two NVIDIA switches below.
+            Picker(selection: Binding(get: { bcd.gpuCard }, set: { id in bcd.gpuCard = id; LibraryPrefs.setGPUCard(id, for: entry.windowsPath) })) {
+                Text("Automatic").tag("")
+                ForEach(GPUCards.all, id: \.id) { Text($0.title).tag($0.id) }
+            } label: {
+                compatLabel("Graphics card the game sees", "For games that refuse this GPU or only run on cards they know")
             }
-            Toggle(isOn: Binding(get: { bcd.olderNvidia }, set: { on in bcd.olderNvidia = on; LibraryPrefs.setOlderNvidia(on, for: entry.windowsPath) })) {
-                compatLabel("Older NVIDIA card (Direct3D 9)", "For older games that crash with this GPU, like Fallout 3 and New Vegas")
+            Group {
+                Toggle(isOn: Binding(get: { bcd.nvidia }, set: { on in bcd.nvidia = on; LibraryPrefs.setNvidia(on, for: entry.windowsPath) })) {
+                    compatLabel("Report an NVIDIA GPU", "For \"no graphics card\" errors")
+                }
+                Toggle(isOn: Binding(get: { bcd.olderNvidia }, set: { on in bcd.olderNvidia = on; LibraryPrefs.setOlderNvidia(on, for: entry.windowsPath) })) {
+                    compatLabel("Older NVIDIA card (Direct3D 9)", "For older games that crash with this GPU, like Fallout 3 and New Vegas")
+                }
             }
+            .disabled(GPUCards.card(bcd.gpuCard) != nil)
             Toggle(isOn: Binding(get: { bcd.wineVCRT }, set: { on in bcd.wineVCRT = on; LibraryPrefs.setWineVCRT(on, for: entry.windowsPath) })) {
-                compatLabel("Wine's C++ runtime", "Instead of the game's msvcp/vcruntime")
+                compatLabel(L("Wine's C++ runtime"), L("Instead of the game's msvcp/vcruntime"))
             }
             // madeira-bcd: MADEIRA_REAL_SUSPEND for this game (BCDLaunch.realSuspend).
             Picker(selection: Binding(get: { bcd.realSuspend.map { $0 ? 1 : 2 } ?? 0 },
@@ -4179,7 +4291,7 @@ struct LibraryDetail: View {
                 Text("On").tag(1)
                 Text("Off").tag(2)
             } label: {
-                compatLabel("Pause threads fully", "For Unity games that crash while loading, like Megabonk. Can make other games freeze")
+                compatLabel(L("Pause threads fully"), L("For Unity games that crash while loading, like Megabonk. Can make other games freeze"))
             }
             // Fastsync-only switches: shown for every game, usable only while
             // Settings › Sync engine is Fastsync.
@@ -4223,7 +4335,7 @@ struct LibraryDetail: View {
             TextField("Title", text: $entry.title)
             Button("Find on Steam", systemImage: "magnifyingglass") { findCover = true }
             Button("Choose cover image", systemImage: "photo") { importCover = true }
-            if entry.coverFile != nil { Button((entry.steamAppID ?? entry.steamID) != nil ? "Use Steam artwork" : "Remove cover image") { entry.coverFile = nil } }
+            if entry.coverFile != nil { Button((entry.steamAppID ?? entry.steamID) != nil ? L("Use Steam artwork") : L("Remove cover image")) { entry.coverFile = nil } }
         } }
         // A link that starts this game from a Home Screen icon (SavesAndShortcuts.swift).
         if entry.desktop != true {
@@ -4232,7 +4344,7 @@ struct LibraryDetail: View {
                     UIPasteboard.general.string = ShortcutRouter.link(for: entry.windowsPath)
                     copiedLink = true
                 } label: {
-                    Label(copiedLink ? "Link copied" : "Copy Home Screen shortcut link",
+                    Label(copiedLink ? L("Link copied") : L("Copy Home Screen shortcut link"),
                           systemImage: copiedLink ? "checkmark" : "link")
                 }
             } header: { Text("Home Screen") } footer: {
@@ -4326,6 +4438,9 @@ struct LibraryDetail: View {
                     EpicEntrySection(entry: $entry) { leaving = true; dismiss() }
                     EpicCloudSection(appName: appName)
                 }
+                if entry.eaOfferID != nil {
+                    EAEntrySection(entry: $entry) { leaving = true; dismiss() }
+                }
                 if let install = squareEnix {
                     if FFXIVLibrary.enabled {
                         FFXIVUpdateSection(entry: entry, install: install, update: $squareEnixUpdate)
@@ -4352,10 +4467,18 @@ struct LibraryDetail: View {
                 }
                 // madeira-bcd: always last, for every entry, the Desktop too (GameRecommendationsApply.swift).
                 Section {
+                    Button("Share Setup", systemImage: "square.and.arrow.up") { model.save(entry); shareSetup = true }
+                    Button("Apply Shared Setup", systemImage: "square.and.arrow.down") { askSetupSource = true }
+                        .confirmationDialog("Apply a shared setup", isPresented: $askSetupSource, titleVisibility: .visible) {
+                            Button("Choose a File") { importSetup = true }
+                            Button("Paste from Clipboard") { readSetup { try GameSetup(text: UIPasteboard.general.string ?? "") } }
+                        }
                     Button("Copy Settings", systemImage: "doc.on.doc") {
                         let configText = entry.config ?? ""
                         UIPasteboard.general.string = configText.isEmpty ? "# Default configuration" : configText
                     }
+                    // ClaudeHelp.swift: the fixes guide, the logs and this game's config to a chat.
+                    ClaudeHelpButton(entry: entry)
                     Button("Reset to Recommended", systemImage: "arrow.counterclockwise") { confirmReset = true }
                         .confirmationDialog(GameRecommendations.question(recommended, desktop: entry.desktop == true),
                                             isPresented: $confirmReset, titleVisibility: .visible) {
@@ -4363,6 +4486,10 @@ struct LibraryDetail: View {
                         }
                 } footer: {
                     Text(GameRecommendations.note(recommended, desktop: entry.desktop == true))
+                }
+                .fileImporter(isPresented: $importSetup,
+                              allowedContentTypes: [GameSetup.contentType, .json, .plainText, .data]) { result in
+                    readSetup { try GameSetup.read(file: try result.get()) }
                 }
             }
             .navigationTitle("Game details").navigationBarTitleDisplayMode(.inline)
@@ -4392,6 +4519,22 @@ struct LibraryDetail: View {
                 if squareEnix != nil { LibraryEntry.setTransientArguments(nil, for: entry.id) }
             }
         }
+        .sheet(isPresented: $shareSetup) { GameSetupShareSheet(entry: entry) }
+        .sheet(item: $setupToApply) { pending in
+            GameSetupApplySheet(setup: pending.setup, gameTitle: entry.title,
+                                otherGame: pending.setup.match(steamAppID: entry.steamAppID, program: GameSetup.programName(entry)) == 0) { controls, ini in
+                do {
+                    try pending.setup.apply(to: &entry, controls: controls, iniFiles: ini)
+                    model.save(entry)
+                    reloadBCD()
+                } catch {
+                    setupError = "This setup could not be applied: \(error.localizedDescription)"
+                }
+            }
+        }
+        .alert("Shared setup", isPresented: Binding(get: { setupError != nil }, set: { if !$0 { setupError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(setupError ?? "") }
         .sheet(isPresented: $findCover) { SteamSearchView(query: entry.title) { match in entry.steamID = match.id; entry.title = match.name; entry.coverFile = nil } }
         .sheet(isPresented: $squareEnixSignIn, onDismiss: {
             guard squareEnixSignedIn else { return }
@@ -4412,11 +4555,11 @@ struct LibraryDetail: View {
             do {
                 let url = try result.get(); let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }
                 let attrs = try url.resourceValues(forKeys: [.fileSizeKey])
-                guard (attrs.fileSize ?? Int.max) <= 20_000_000 else { throw LibraryError.message("Choose an image smaller than 20 MB.") }
+                guard (attrs.fileSize ?? Int.max) <= 20_000_000 else { throw LibraryError.message(L("Choose an image smaller than 20 MB.")) }
                 let data = try Data(contentsOf: url)
                 guard let source = CGImageSourceCreateWithData(data as CFData, nil),
                       let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 1200, kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary),
-                      let jpeg = UIImage(cgImage: thumbnail).jpegData(compressionQuality: 0.85) else { throw LibraryError.message("This image could not be opened.") }
+                      let jpeg = UIImage(cgImage: thumbnail).jpegData(compressionQuality: 0.85) else { throw LibraryError.message(L("This image could not be opened.")) }
                 let dir = LibraryModel.documents.appendingPathComponent("madeira-art", isDirectory: true)
                 try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
                 let name = entry.id.uuidString + ".jpg"; try jpeg.write(to: dir.appendingPathComponent(name), options: .atomic)
@@ -4442,6 +4585,7 @@ struct LibraryDetail: View {
 /// LibraryPrefs' switches and the GameProfiles.swift file's lines.
 struct BCDGameValues {
     var avx = false, nvidia = false, olderNvidia = false, wineVCRT = false
+    var gpuCard = ""
     var realSuspend: Bool? = nil, unityIL2CPP = false
     var configText = ""
     init() {}
@@ -4449,6 +4593,7 @@ struct BCDGameValues {
         avx = LibraryPrefs.avx(windowsPath)
         nvidia = LibraryPrefs.nvidia(windowsPath)
         olderNvidia = LibraryPrefs.olderNvidia(windowsPath)
+        gpuCard = LibraryPrefs.gpuCard(windowsPath) ?? ""
         wineVCRT = LibraryPrefs.wineVCRT(windowsPath)
         realSuspend = LibraryPrefs.realSuspend(windowsPath)
         configText = GameProfile(windowsPath: windowsPath).text
@@ -4505,7 +4650,7 @@ struct SteamSearchView: View {
             .task(id: submitted) {
                 guard !submitted.trimmingCharacters(in: .whitespaces).isEmpty else { return }
                 loading = true; error = nil
-                do { let found = try await SteamCatalog.search(submitted); try Task.checkCancellation(); results = found; if found.isEmpty { error = "No matches. Try a different title." } }
+                do { let found = try await SteamCatalog.search(submitted); try Task.checkCancellation(); results = found; if found.isEmpty { error = L("No matches. Try a different title.") } }
                 catch is CancellationError { return }
                 catch { self.error = error.localizedDescription }
                 loading = false
@@ -4701,15 +4846,15 @@ struct DockOfflineMark: View {
         }
         .buttonStyle(.plain)
         .task { preparedOnline = MadeiraDock.games(drive: MadeiraDock.drive).first { $0.id == appID }?.customExecutables ?? false }
-        .alert(ready ? "Can be played offline" : "Not ready for offline play yet", isPresented: $explain) {
+        .alert(ready ? L("Can be played offline") : L("Not ready for offline play yet"), isPresented: $explain) {
             Button("OK", role: .cancel) {}
         } message: { Text(Self.explanation(mark)) }
     }
     static func line(_ mark: DockOffline.Mark) -> String {
         switch mark {
-        case .ready: return "Can be played offline"
-        case .needsFirstStart: return "Start once online to play offline"
-        case .needsOnline: return "Start a game online to play offline"
+        case .ready: return L("Can be played offline")
+        case .needsFirstStart: return L("Start once online to play offline")
+        case .needsOnline: return L("Start a game online to play offline")
         }
     }
     static func explanation(_ mark: DockOffline.Mark) -> String {
@@ -4784,7 +4929,7 @@ struct LaunchFlagChips: View {
                     Button(flag) { arguments = Self.toggled(arguments, flag) }
                         .buttonStyle(.bordered).tint(on ? Color.accentColor : Color.gray)
                         .font(.caption.monospaced())
-                        .accessibilityValue(on ? "On" : "Off")
+                        .accessibilityValue(on ? L("On") : L("Off"))
                 }
             }
         }
@@ -4851,7 +4996,7 @@ struct MadeiraCredit: View {
 /// MADEIRA_RUNTIME_SETTINGS=0 hides this section.
 /// A sheet opened from Settings; LibraryView presents it from the Form itself.
 enum SettingsSheet: String, Identifiable {
-    case allSettings, steamSignIn, epicSignIn, dock
+    case allSettings, steamSignIn, epicSignIn, eaSignIn, dock
     var id: String { rawValue }
 }
 
@@ -4867,8 +5012,8 @@ enum SyncEngine: String, CaseIterable, Identifiable {
     var label: String {
         switch self {
         case .madsync: return "Madsync"
-        case .fastsync: return "Fastsync (default)"
-        case .wine: return "Wine standard sync"
+        case .fastsync: return L("Fastsync (default)")
+        case .wine: return L("Wine standard sync")
         }
     }
     /// The MADEIRA_FASTSYNC values Wine treats as "fastsync on" (sync.c, event.c).
@@ -4932,8 +5077,8 @@ struct RuntimeMemorySyncSettings: View {
     /// The stored value "" (no key) and "classic" are the same rules, unless
     /// madeira.cfg has swap-mode = 2 (then no key means broad, ml1257).
     static let coverageChoices: [(String, String)] = [
-        ("", "Large allocations (8 MB+)"), ("blocks", "All allocations of 1 MB+"), ("wide", "1 MB+ and overflow"),
-        ("broad", "Whole reservations 4 MB+ (broad)"),
+        ("", L("Large allocations (8 MB+)")), ("blocks", L("All allocations of 1 MB+")), ("wide", L("1 MB+ and overflow")),
+        ("broad", L("Whole reservations 4 MB+ (broad)")),
     ]
     @State private var poolMB = Self.intKey("pool")
     @State private var vramMB = Self.intKey("vram-mb")
@@ -4976,12 +5121,12 @@ struct RuntimeMemorySyncSettings: View {
 
     var body: some View {
         Section {
-            mbPicker("JIT pool", key: "pool", value: $poolMB, choices: Self.poolChoices,
-                     zero: "Default (896 MB)", label: { "\($0) MB" })
-            mbPicker("Video memory", key: "vram-mb", value: $vramMB, choices: Self.vramChoices,
-                     zero: "Automatic", label: Self.gb)
-            mbPicker("Swap tier", key: "swap-mb", value: $swapMB, choices: Self.swapChoices,
-                     zero: "Off", label: Self.gb)
+            mbPicker(L("JIT pool"), key: "pool", value: $poolMB, choices: Self.poolChoices,
+                     zero: L("Default (896 MB)"), label: { "\($0) MB" })
+            mbPicker(L("Video memory"), key: "vram-mb", value: $vramMB, choices: Self.vramChoices,
+                     zero: L("Automatic"), label: Self.gb)
+            mbPicker(L("Swap tier"), key: "swap-mb", value: $swapMB, choices: Self.swapChoices,
+                     zero: L("Off"), label: Self.gb)
             Picker("Swap coverage", selection: Binding(get: { coverage }, set: { mode in
                 coverage = mode; changed = true
                 // With swap-mode = 2 no key means broad, so classic is written out.
@@ -5054,8 +5199,8 @@ struct LibraryPointerSettings: View {
         Picker("Pointer mode", selection: mode) {
             Text("Absolute").tag("absolute"); Text("Relative").tag("relative"); Text("Touch").tag("touch")
         }.pickerStyle(.segmented)
-        Text(input.touchMode ? "Tap the screen to position and click. Hold and move to drag. Two fingers: right click or scroll."
-             : (input.relative ? "Drag to send relative mouse movement for mouse-look. Tap to click." : "Drag the pointer like a trackpad. Tap to click."))
+        Text(input.touchMode ? L("Tap the screen to position and click. Hold and move to drag. Two fingers: right click or scroll.")
+             : (input.relative ? L("Drag to send relative mouse movement for mouse-look. Tap to click.") : L("Drag the pointer like a trackpad. Tap to click.")))
             .font(.caption).foregroundStyle(.secondary)
         LabeledContent("Touch sensitivity") {
             Slider(value: input.relative ? $input.sensRel : $input.sensAbs, in: 0.1...8)
@@ -5080,11 +5225,11 @@ struct GraphicsSettings: View {
     var refresh = 0
 
     static let d3d9Choices: [(String, String)] = [
-        ("", "DXMT (default)"), ("native", "DXMT native frontend (32-bit)"), ("wined3d", "Wine wined3d on OpenGL (Zink)"),
+        ("", L("DXMT (default)")), ("native", L("DXMT native frontend (32-bit)")), ("wined3d", L("Wine wined3d on OpenGL (Zink)")),
     ]
-    static let d3d11Choices: [(String, String)] = [("", "DXMT (default)"), ("dxvk", "DXVK on Vulkan (experimental)")]
-    static let d3d12Choices: [(String, String)] = [("", "madeira-d3d12 (default)"), ("vkd3d", "vkd3d-proton on Vulkan")]
-    static let vulkanChoices: [(String, String)] = [("", "Automatic"), ("moltenvk", "MoltenVK"), ("kosmickrisp", "KosmicKrisp")]
+    static let d3d11Choices: [(String, String)] = [("", L("DXMT (default)")), ("dxvk", L("DXVK on Vulkan (experimental)"))]
+    static let d3d12Choices: [(String, String)] = [("", L("madeira-d3d12 (default)")), ("vkd3d", "vkd3d-proton on Vulkan")]
+    static let vulkanChoices: [(String, String)] = [("", L("Automatic")), ("moltenvk", "MoltenVK"), ("kosmickrisp", "KosmicKrisp")]
 
     static func bundled(_ path: String) -> Bool {
         FileManager.default.fileExists(atPath: Bundle.main.bundleURL.appendingPathComponent(path).path)
@@ -5150,70 +5295,70 @@ struct GraphicsSettings: View {
 
     private var d3d9Note: String {
         switch d3d9 {
-        case "": return "DXMT draws Direct3D 9 on Metal; 32-bit games run its frontend through the x86 translator."
-        case "native": return "32-bit games run DXMT's Direct3D 9 frontend as native ARM64 code; 64-bit games are unchanged."
-        case "wined3d": return "Experimental: 32- and 64-bit games use Wine's own Direct3D 9 on OpenGL, which needs the Zink OpenGL backend."
-        default: return "A value Madeira does not know; Direct3D 9 games use DXMT."
+        case "": return L("DXMT draws Direct3D 9 on Metal; 32-bit games run its frontend through the x86 translator.")
+        case "native": return L("32-bit games run DXMT's Direct3D 9 frontend as native ARM64 code; 64-bit games are unchanged.")
+        case "wined3d": return L("Experimental: 32- and 64-bit games use Wine's own Direct3D 9 on OpenGL, which needs the Zink OpenGL backend.")
+        default: return L("A value Madeira does not know; Direct3D 9 games use DXMT.")
         }
     }
     private var d3d11Note: String {
         switch d3d11 {
-        case "": return "DXMT draws Direct3D 10 and 11 on Metal."
-        case "dxvk": return "Experimental, 64-bit games only: Direct3D 10/11 and DXGI run through DXVK on Vulkan (MoltenVK unless a Vulkan driver is chosen below). Direct3D 12 then uses vkd3d-proton."
-        default: return "A value Madeira does not know; Direct3D 10/11 games use DXMT."
+        case "": return L("DXMT draws Direct3D 10 and 11 on Metal.")
+        case "dxvk": return L("Experimental, 64-bit games only: Direct3D 10/11 and DXGI run through DXVK on Vulkan (MoltenVK unless a Vulkan driver is chosen below). Direct3D 12 then uses vkd3d-proton.")
+        default: return L("A value Madeira does not know; Direct3D 10/11 games use DXMT.")
         }
     }
     private var d3d12Note: String {
         switch d3d12 {
-        case "" where d3d11 == "dxvk": return "With DXVK chosen above, Direct3D 12 games use vkd3d-proton on Vulkan: DXVK's DXGI shows only Vulkan devices."
-        case "": return "Direct3D 12 games run on madeira-d3d12, Madeira's own Direct3D 12 on Metal."
-        case "vkd3d": return "Experimental, 64-bit games only: Direct3D 12 runs through vkd3d-proton on Vulkan (MoltenVK unless a Vulkan driver is chosen below)."
-        default: return "A developer value; Direct3D 12 games run on madeira-d3d12."
+        case "" where d3d11 == "dxvk": return L("With DXVK chosen above, Direct3D 12 games use vkd3d-proton on Vulkan: DXVK's DXGI shows only Vulkan devices.")
+        case "": return L("Direct3D 12 games run on madeira-d3d12, Madeira's own Direct3D 12 on Metal.")
+        case "vkd3d": return L("Experimental, 64-bit games only: Direct3D 12 runs through vkd3d-proton on Vulkan (MoltenVK unless a Vulkan driver is chosen below).")
+        default: return L("A developer value; Direct3D 12 games run on madeira-d3d12.")
         }
     }
     private var vulkanNote: String {
         switch vulkan {
-        case "": return "Off, so games find no Vulkan, unless DXVK or vkd3d-proton is chosen above, which turns on MoltenVK."
-        case "moltenvk": return "64-bit games get Vulkan through MoltenVK, the driver the Zink OpenGL backend also uses."
-        case "kosmickrisp": return "Experimental: 64-bit games get Vulkan through Mesa's KosmicKrisp driver. Needs iOS 26 and an A14 chip or newer."
-        case "off", "0": return "Off: games find no Vulkan, and DXVK and vkd3d-proton are not used even when chosen above."
-        default: return "A Vulkan library named by path in madeira.cfg."
+        case "": return L("Off, so games find no Vulkan, unless DXVK or vkd3d-proton is chosen above, which turns on MoltenVK.")
+        case "moltenvk": return L("64-bit games get Vulkan through MoltenVK, the driver the Zink OpenGL backend also uses.")
+        case "kosmickrisp": return L("Experimental: 64-bit games get Vulkan through Mesa's KosmicKrisp driver. Needs iOS 26 and an A14 chip or newer.")
+        case "off", "0": return L("Off: games find no Vulkan, and DXVK and vkd3d-proton are not used even when chosen above.")
+        default: return L("A Vulkan library named by path in madeira.cfg.")
         }
     }
 
     var body: some View {
         Section {
-            choicePicker("Direct3D 9", key: "d3d9", value: $d3d9, choices: Self.d3d9Choices)
+            choicePicker(L("Direct3D 9"), key: "d3d9", value: $d3d9, choices: Self.d3d9Choices)
             note(d3d9Note)
             if d3d9 == "wined3d" {
                 let backend = (MadeiraConfig.get(Self.glBackendKey) ?? "").lowercased()
                 if !Self.hasZink || (!backend.isEmpty && backend != "zink") {
                     note(Self.hasZink ? "madeira.cfg sets gl-backend = \(backend); wined3d needs gl-backend = zink."
-                                      : "This build has no Zink OpenGL backend (gl/ folder), so wined3d cannot start.", warning: true)
+                                      : L("This build has no Zink OpenGL backend (gl/ folder), so wined3d cannot start."), warning: true)
                 }
             }
 
-            choicePicker("Direct3D 10/11", key: "d3d11", value: $d3d11,
+            choicePicker(L("Direct3D 10/11"), key: "d3d11", value: $d3d11,
                          choices: Self.hasDxvk || d3d11 == "dxvk" ? Self.d3d11Choices : Array(Self.d3d11Choices.prefix(1)))
             note(d3d11Note)
-            if !Self.hasDxvk { note("DXVK is not in this build.", warning: d3d11 == "dxvk") }
+            if !Self.hasDxvk { note(L("DXVK is not in this build."), warning: d3d11 == "dxvk") }
             if d3d11 == "dxvk" && !d3d12.isEmpty && d3d12 != "vkd3d" {
                 note("Direct3D 12 is set to \(d3d12); with DXVK only vkd3d-proton can show Direct3D 12 games.", warning: true)
             }
 
-            choicePicker("Direct3D 12", key: "d3d12", value: $d3d12,
+            choicePicker(L("Direct3D 12"), key: "d3d12", value: $d3d12,
                          choices: Self.hasVkd3d || d3d12 == "vkd3d" ? Self.d3d12Choices : Array(Self.d3d12Choices.prefix(1)))
             note(d3d12Note)
-            if !Self.hasVkd3d { note("vkd3d-proton is not in this build.", warning: d3d12 == "vkd3d") }
+            if !Self.hasVkd3d { note(L("vkd3d-proton is not in this build."), warning: d3d12 == "vkd3d") }
 
-            choicePicker("Vulkan driver", key: "vulkan", value: $vulkan,
+            choicePicker(L("Vulkan driver"), key: "vulkan", value: $vulkan,
                          choices: Self.hasKosmicKrisp || vulkan == "kosmickrisp" ? Self.vulkanChoices : Array(Self.vulkanChoices.prefix(2)),
-                         other: { $0 == "off" || $0 == "0" ? "Off" : "Custom library" })
+                         other: { $0 == "off" || $0 == "0" ? L("Off") : L("Custom library") })
             note(vulkanNote)
             if !Self.hasKosmicKrisp {
-                note("KosmicKrisp is not in this build (no gl/libvulkan_kosmickrisp.dylib).", warning: vulkan == "kosmickrisp")
+                note(L("KosmicKrisp is not in this build (no gl/libvulkan_kosmickrisp.dylib)."), warning: vulkan == "kosmickrisp")
             } else if !Self.metal4 {
-                note("This device has no Metal 4 GPU, so KosmicKrisp cannot start on it.", warning: vulkan == "kosmickrisp")
+                note(L("This device has no Metal 4 GPU, so KosmicKrisp cannot start on it."), warning: vulkan == "kosmickrisp")
             }
 
             Button("Reset to defaults") {
@@ -5333,12 +5478,14 @@ struct LibraryFloatingItem: View {
                     Image(systemName: "line.3.horizontal").font(.title3.weight(.semibold)).frame(width: 48, height: 48)
                 }.buttonStyle(.plain).modifier(LibraryPillGlass())
                     .opacity(faded && drag == .zero && !model.menu ? 0.3 : 1)
-                    .accessibilityLabel("Game menu").accessibilityHint("Drag to move")
-            } else { LibraryMetrics().accessibilityHint("Drag to move") }
+                    .accessibilityLabel(L("Game menu")).accessibilityHint(L("Drag to move"))
+            } else { LibraryMetrics().accessibilityHint(L("Drag to move")) }
         }
-        // The overlay's cells have fixed widths; its One row layout can be wider than the old 390 pt cap.
-        .frame(maxWidth: isMenu ? 48 : max(48, viewport.width - insets.leading - insets.trailing - 16))
-        .fixedSize(horizontal: false, vertical: true)
+        // The overlay's cells have fixed widths, so it takes its own size. A frame with a
+        // maxWidth takes all the width it is offered: the overlay measured the screen's width,
+        // and the drag could only centre it (the Column layout showed it most).
+        .frame(maxWidth: isMenu ? 48 : nil)
+        .fixedSize(horizontal: !isMenu, vertical: true)
         .background(GeometryReader { proxy in
             Color.clear.onAppear { measured = proxy.size }.onChange(of: proxy.size) { _, size in measured = size }
         })
@@ -5535,14 +5682,14 @@ struct LibraryHUD: View {
                 // holds the desktop back, Show desktop reveals it.
                 HStack(spacing: 14) {
                     if dockStart.failure != nil {
-                        launchGlyph("Close session", "stop.circle") { model.requestQuit() }
+                        launchGlyph(L("Close session"), "stop.circle") { model.requestQuit() }
                     }
-                    launchGlyph(showLogs ? "Hide live log" : "Show live log", "text.alignleft", on: showLogs) {
+                    launchGlyph(showLogs ? L("Hide live log") : L("Show live log"), "text.alignleft", on: showLogs) {
                         model.toggleLaunchLogs()
                     }
                     if dockStart.holding {
-                        launchGlyph("Show desktop", "macwindow") { dockStart.showDesktop(model) }
-                            .accessibilityHint("Shows the Windows desktop")
+                        launchGlyph(L("Show desktop"), "macwindow") { dockStart.showDesktop(model) }
+                            .accessibilityHint(L("Shows the Windows desktop"))
                     }
                 }.modifier(LaunchEntrance(visible: launchVisible, step: 3, still: curtained))
                 if model.launchSlow && !dockStart.holding {
@@ -5586,14 +5733,14 @@ struct LibraryHUD: View {
                 launchWideStatus.modifier(LaunchEntrance(visible: launchVisible, step: 2, rise: CGSize(width: 22, height: 0), still: curtained))
                 HStack(spacing: 12) {
                     if dockStart.failure != nil {
-                        launchGlyph("Close session", "stop.circle") { model.requestQuit() }
+                        launchGlyph(L("Close session"), "stop.circle") { model.requestQuit() }
                     }
-                    launchGlyph(showLogs ? "Hide live log" : "Show live log", "text.alignleft", on: showLogs) {
+                    launchGlyph(showLogs ? L("Hide live log") : L("Show live log"), "text.alignleft", on: showLogs) {
                         model.toggleLaunchLogs()
                     }
                     if dockStart.holding {
-                        launchGlyph("Show desktop", "macwindow") { dockStart.showDesktop(model) }
-                            .accessibilityHint("Shows the Windows desktop")
+                        launchGlyph(L("Show desktop"), "macwindow") { dockStart.showDesktop(model) }
+                            .accessibilityHint(L("Shows the Windows desktop"))
                     }
                     if model.launchSlow && !dockStart.holding {
                         Button("Show game view") { model.showGameView(reason: "button") }
@@ -5677,8 +5824,8 @@ struct LibraryHUD: View {
     }
     /// What the start is doing before the Dock reports (or for a game without Dock).
     private var launchIdleStatus: String {
-        if let entry = model.preparing { return model.startingJIT == entry.id ? "Enabling JIT…" : "Getting ready…" }
-        return model.launchSlow ? "Still starting…" : "Starting your game…"
+        if let entry = model.preparing { return model.startingJIT == entry.id ? L("Enabling JIT…") : L("Getting ready…") }
+        return model.launchSlow ? L("Still starting…") : L("Starting your game…")
     }
 
     /// What the Dock start is doing (DockStartStatus), read once a second.
@@ -5874,7 +6021,7 @@ struct LibraryLiveLogs: View {
                 .frame(maxWidth: .infinity, minHeight: max(0, geo.size.height - 16), alignment: .topLeading)
             }.defaultScrollAnchor(.bottom).padding(8)
         }.background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 10)).foregroundStyle(.white)
-            .accessibilityLabel("Live diagnostic log")
+            .accessibilityLabel(L("Live diagnostic log"))
     }
 }
 

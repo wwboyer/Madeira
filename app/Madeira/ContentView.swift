@@ -2198,6 +2198,7 @@ struct ContentView: View {
             switch sheet {
             case .steamSignIn: SteamSignInView()
             case .epicSignIn: EpicSignInView()
+            case .eaSignIn: EASignInView()
             case .dock: MadeiraDockView { startDock($0, compactPool: $1) }
             case .allSettings: AllSettingsView()
             }
@@ -2607,10 +2608,25 @@ struct ContentView: View {
 
     /// The rest of Play, with JIT on: checks the entry's launch profile and starts it.
     /// An Epic game first gets Epic's sign-in arguments with a fresh one-use code
-    /// (EpicLibrary.launchArguments), for this launch only.
-    private func startLibraryEntry(_ entry: LibraryEntry, epicReady: Bool = false) {
+    /// (EpicLibrary.launchArguments), for this launch only. An EA game first gets its
+    /// licence, the EA app's environment and Madeira's stand-in for the EA app's local
+    /// service (EALibrary.prepareLaunch); every other launch starts without that environment.
+    private func startLibraryEntry(_ entry: LibraryEntry, epicReady: Bool = false, eaReady: Bool = false) {
         guard !EpicCloud.shared.isBusy else {
             library.error = "Wait for Epic Cloud save sync to finish before starting a game."
+            return
+        }
+        if entry.eaOfferID == nil { EALibrary.clearEnvironment() }
+        if let offer = entry.eaOfferID, !eaReady {
+            Task { @MainActor in
+                do {
+                    try await EALibrary.shared.prepareLaunch(entry)
+                    startLibraryEntry(entry, epicReady: epicReady, eaReady: true)
+                } catch {
+                    LogStore.shared.log("[ea-launch] offer=\(offer) not started: \(error.localizedDescription)", level: .error)
+                    library.error = "This EA game could not be prepared: \(error.localizedDescription)"
+                }
+            }
             return
         }
         if let app = entry.epicAppName, !epicReady {
@@ -2666,12 +2682,26 @@ struct ContentView: View {
         var on: [String] = []
         if LibraryPrefs.avx(path) { setenv("MADEIRA_FEX_AVX", "1", 1); on.append("avx") }
         if LibraryPrefs.wineVCRT(path) { setenv("MADEIRA_WINE_VCRT", "1", 1); on.append("wine-vcrt") }
-        if LibraryPrefs.nvidia(path) {
+        let card = GPUCards.card(LibraryPrefs.gpuCard(path))
+        if LibraryPrefs.nvidia(path), card == nil {
             setenv("DXMT_ENABLE_NVEXT", "1", 1)
             setenv("DXMT_WSI_MONITOR_IDENTITY", "1", 1)
             setenv("DXMT_WSI_MODE_TABLE", "1", 1)
             if entry.desktop == true, getenv("MADEIRA_DXMT_EXTRA") == nil { setenv("MADEIRA_DXMT_EXTRA", "dxgi.customDeviceId=2544", 1) }
             on.append("nvidia")
+        }
+        // "Graphics card the game sees" replaces the NVIDIA switch (BCDLaunch.applyExtras);
+        // applyEnvironment unset its NVAPI and monitor switches. The Desktop entry gets
+        // the card's DXMT options here, as it gets the switch's device id above.
+        if let card {
+            let metalName = MTLCreateSystemDefaultDevice()?.name
+            for (name, value) in GPUCards.environment(card, metalName: metalName) {
+                if let value { setenv(name, value, 1) } else { unsetenv(name) }
+            }
+            if entry.desktop == true {   // applyLibrary left the Desktop entry without any
+                setenv("MADEIRA_DXMT_EXTRA", GPUCards.dxmtOptions(card, metalName: metalName).joined(separator: ";"), 1)
+            }
+            on.append("gpu-card=\(card.id)")
         }
         if !on.isEmpty { LogStore.shared.log("[bcd] game switches: \(on.joined(separator: " "))") }
     }
@@ -2702,6 +2732,7 @@ struct ContentView: View {
         SteamOwnedLibrary.shared.sessionChanged(active: true)
         ItchLibrary.shared.sessionChanged(active: true)
         EpicLibrary.shared.sessionChanged(active: true)
+        EALibrary.shared.sessionChanged(active: true)
         /* ml1095: one config file. Written once from any legacy madeira-*.txt. */
         MadeiraConfig.migrateLegacy { self.logStore.log($0) }
         MadeiraConfig.deleteLegacyFiles { self.logStore.log($0) }   /* ml1096: the old files go once the cfg exists */
@@ -2976,6 +3007,16 @@ struct ContentView: View {
                     dxmtOptions.append(option)
                 }
                 if !extra.isEmpty { logStore.log("DXMT config: \(extra.joined(separator: ";")) via the game's settings") }
+            }
+            // Past DXMT's limit (below) every option is lost; the adapter names (a chosen
+            // graphics card's, GPUCards.swift) go first, as the ids are what a game's table
+            // reads: DXGI's, then Direct3D 9's (older games read the name more often).
+            for key in GPUCards.nameKeys where dxmtOptions.joined(separator: ";").utf16.count > 259 {
+                let before = dxmtOptions.count
+                dxmtOptions.removeAll { GPUCards.optionKey($0) == key }
+                if dxmtOptions.count != before {
+                    logStore.log("DXMT config: \(key) left out, to stay within DXMT's 259 characters", level: .error)
+                }
             }
             // Unset otherwise, so a previous session's options in this app process do not apply.
             if !dxmtOptions.isEmpty { setenv("DXMT_CONFIG", dxmtOptions.joined(separator: ";"), 1) } else { unsetenv("DXMT_CONFIG") }

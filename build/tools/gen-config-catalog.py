@@ -688,6 +688,18 @@ OVERLAY = {
                 "note": "1: DXGI names NVIDIA as the vendor, DXMT's NVAPI answers and win32u registers the display "
                         "adapter as a GeForce RTX 3060 (driver 581.57). Per game: Game details > Report an NVIDIA GPU, "
                         "which also sets the matching DXGI device id."},
+    # Set by a library entry's "Graphics card the game sees" (app/Madeira/GPUCards.swift),
+    # which also gives DXMT's DXGI and Direct3D 9 the same card.
+    "env.MADEIRA_GPU_VENDOR": {"title": "Windows' display adapter: PCI vendor id (hex)",
+                "note": "With MADEIRA_GPU_DEVICE: the display adapter win32u registers (EnumDisplayDevices, SetupAPI, "
+                        "the display driver key, D3DKMT), instead of Apple 106B:0001 or the RTX 3060 of Report an "
+                        "NVIDIA GPU. Per game: Game details > Graphics card the game sees, which sets DXGI and "
+                        "Direct3D 9 to the same card."},
+    "env.MADEIRA_GPU_DEVICE": {"title": "Windows' display adapter: PCI device id (hex)",
+                "note": "With MADEIRA_GPU_VENDOR: the adapter's device id. Per game: Game details > Graphics card the game sees."},
+    "env.MADEIRA_GPU_NAME": {"title": "Windows' display adapter: name",
+                "note": "The adapter name Windows reports with MADEIRA_GPU_VENDOR and MADEIRA_GPU_DEVICE; unset, the "
+                        "name of the PCI id. Per game: Game details > Graphics card the game sees."},
     "ags-rewrite": {"title": "D3D12 AMD AGS 64-bit atomics rewrite"},
     "env.MADEIRA_EXE": {"title": "Program to start at launch (Windows path or name)"},
     "env.MADEIRA_ONBOARDING": {"title": "First-run Steam setup"},
@@ -1067,6 +1079,17 @@ OVERLAY = {
                         "Launcher 132 MB, Social Club 68 MB through a whole RDR2 session). Larger uploads still get a "
                         "block of their own; each named program logs one [small-rings] line. Unset or 0 (default): "
                         "32 MB, as before. Set it in the game's own file; read when the program starts."},
+    # DXMT's Direct3D 9 index buffers read it (dxmt, build/dxmt-patches/0001-d3d9-index-range-per-draw.patch).
+    "env.MADEIRA_D3D9_INDEX_RANGE": {"category": "Direct3D 9/10/11 (DXMT)",
+                "title": "Direct3D 9: upload only the index bytes a draw reads",
+                "kind": "bool", "default": "1", "sources": ["build/dxmt-patches/0001-d3d9-index-range-per-draw.patch"],
+                "note": "On by default. A 32-bit Direct3D 9 game writes its index buffers through a copy Madeira keeps; "
+                        "an indexed draw now copies only the indices it reads into the buffer the GPU reads, instead of "
+                        "the whole buffer before every draw after a lock (the slowdown in engines that lock a little of "
+                        "one big index buffer before each draw, such as Call of Duty's). A lock without NOOVERWRITE still "
+                        "gives the next draw a fresh buffer, so draws already recorded keep what they read. "
+                        "[d3d9-index-range] lines in the log say how much was copied. 0: the whole-buffer copy, as before. "
+                        "Read once per session."},
     # Mesa's opengl32 on D3D12 over Wine's stub (WineProcessBridge.m, build/mesa-d3d12).
     "env.MADEIRA_OPENGL": {"category": "Windows, display & input", "title": "OpenGL through Mesa on D3D12",
                 "kind": "bool", "default": "0",

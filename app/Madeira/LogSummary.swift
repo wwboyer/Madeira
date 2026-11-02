@@ -88,6 +88,8 @@ enum LogSummary {
         var poolWantedMB: Int?
         var poolMB: Int?
         var smallPool = false
+        var poolAllocationFailed = false
+        var guestWindowFailed = false
         var poolPeak: UInt64 = 0
         var poolTotal: UInt64 = 0
         var exhausted = 0
@@ -223,6 +225,15 @@ enum LogSummary {
             }
             if line.contains("[frontend] force close") { facts.forceClosed = true }
             if line.contains("[WineProc] the main process exited while"), line.contains("(steam.exe)") { facts.handedToSteam = true }
+            if line.contains("JIT pool allocation FAILED — not starting Wine.") {
+                facts.sawSession = true
+                facts.poolAllocationFailed = true
+            }
+            if line.contains("[wow-window] main-process reserve FAILED ")
+                || line.contains("[wow-window] refused: map too small") {
+                facts.sawSession = true
+                facts.guestWindowFailed = true
+            }
             if let r = line.range(of: "no hole fits a ") {
                 facts.poolWantedMB = Int(line[r.upperBound...].prefix { $0.isNumber })
                 facts.smallPool = true
@@ -272,6 +283,12 @@ enum LogSummary {
         }
 
         var problems: [String] = []
+        if f.poolAllocationFailed {
+            problems.append("The JIT pool could not be allocated, so Wine was not started. See the JIT pool lines in the full log for the reason.")
+        }
+        if f.guestWindowFailed {
+            problems.append("A 32-bit program could not reserve its 4 GB guest-memory window. See the [wow-window] lines in the full log for the reservation failure.")
+        }
         if f.smallPool, let mb = f.poolMB {
             problems.append("The JIT pool (the memory games' code runs from) got \(mb) MB"
                 + (f.poolWantedMB.map { " instead of \($0) MB" } ?? "")
@@ -366,11 +383,28 @@ enum LogSummary {
         let out = log.deletingLastPathComponent().appendingPathComponent(fileName)
         do {
             try text(f, source: source).write(to: out, atomically: true, encoding: .utf8)
+            keepGameLog(log)
             return true
         } catch {
             fputs("[log-summary] could not write \(fileName): \(error.localizedDescription)\n", stderr)
             return false
         }
+    }
+
+    /// Documents/madeira-last-game-log.txt: a copy of the last log that had a game
+    /// session in it, which Get Help from Claude shares (ClaudeHelp.swift). Without
+    /// it, opening Madeira twice after a game leaves only logs with no game in them.
+    static let gameLogName = "madeira-last-game-log.txt"
+    static func keepGameLog(_ log: URL) {
+        guard log.lastPathComponent != gameLogName else { return }
+        let fm = FileManager.default
+        let target = log.deletingLastPathComponent().appendingPathComponent(gameLogName)
+        let temp = log.deletingLastPathComponent().appendingPathComponent(gameLogName + ".part")
+        try? fm.removeItem(at: temp)
+        guard (try? fm.copyItem(at: log, to: temp)) != nil else { return }
+        // The copy is complete before it takes the old one's place.
+        try? fm.removeItem(at: target)
+        if (try? fm.moveItem(at: temp, to: target)) == nil { try? fm.removeItem(at: temp) }
     }
 
     /// In the background: logs never block the UI.
