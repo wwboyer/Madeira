@@ -64,10 +64,8 @@ def file_op(body):
 def file_blocks(blocks):
     """The decompressed data of each block: a 16-byte header, then raw or deflated data, padded to 128 bytes."""
     pos = 0
-    while pos + 16 <= len(blocks):
-        header_size, _, compressed, decompressed = struct.unpack_from('<IIII', blocks, pos)
-        if header_size != 16:
-            return
+    while pos + 16 <= len(blocks) and struct.unpack_from('<I', blocks, pos)[0] == 16:
+        _, _, compressed, decompressed = struct.unpack_from('<IIII', blocks, pos)
         raw = compressed == UNCOMPRESSED
         length = decompressed if raw else compressed
         chunk = blocks[pos + 16:pos + 16 + length]
@@ -76,6 +74,8 @@ def file_blocks(blocks):
             raise SystemExit(f'block at {pos}: {len(data)} bytes, header says {decompressed}')
         yield data
         pos += (length + 0x8F) & ~0x7F
+    if any(blocks[pos:]):   # only zero padding may follow the last block
+        raise SystemExit(f'block at {pos}: a header other than 16 bytes')
 
 
 def survey(path):
@@ -215,15 +215,23 @@ def apply_patch(path, game):
                     os.rmdir(folder)
             elif name == 'SQPK':
                 command, body = chr(payload[4]), payload[5:]
+                if struct.unpack_from('>I', payload, 0)[0] != len(payload):
+                    raise SystemExit(f'{path}: an SQPK chunk whose size fields disagree')
+                if command == 'T' and struct.unpack_from('>H', body, 3)[0] != 0:
+                    raise SystemExit(f'{path}: a patch for platform {struct.unpack_from(">H", body, 3)[0]}, not 0')
                 if command == 'F' and chr(body[0]) == 'R':
                     # First in a history patch, with an empty path and the expansion ID.
                     # What it removes is unconfirmed, so it is only accepted where it
                     # can't matter: a repository with no files yet.
                     expansion, = struct.unpack_from('>H', body, 0x17)
                     folder = 'ffxiv' if expansion == 0 else f'ex{expansion}'
+                    # A fresh install writes .ver/.bck first; the official app's starting install has the
+                    # four opening movies, which the base game's first history part rewrites from offset 0.
+                    movies = {f'{n:05d}.bk2' for n in range(4)} if expansion == 0 else set()
                     present = [os.path.join(top, name) for part in ('sqpack', 'movie')
                                for top, _, names in os.walk(os.path.join(game, part, folder)) for name in names
-                               if not name.endswith(('.ver', '.bck'))]   # a fresh install writes these first
+                               if not name.endswith(('.ver', '.bck'))
+                               and not (part == 'movie' and top == os.path.join(game, part, folder) and name in movies)]
                     if present:
                         raise SystemExit(f'F R (reset?) for {folder}, which has {len(present)} files; unconfirmed, not applied')
                     command += 'R'
