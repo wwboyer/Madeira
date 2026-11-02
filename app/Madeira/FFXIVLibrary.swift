@@ -265,12 +265,15 @@ import UIKit
     }
 
     // What iOS's progress for the background task counts (SteamDownloadBackground): each
-    // patch three times its size, once each for downloading, checking and applying, so it
-    // keeps moving whichever of them is slow. iOS ends a continued-processing task whose
+    // patch four times its size, once each for downloading, checking, applying and size
+    // checks (half for one before a repository's first patch, half for the one after
+    // applying), so it keeps moving whichever of them is slow. iOS ends a continued-processing task whose
     // progress stops moving: on 2026-11-02 it did so seconds after Madeira left the
     // foreground, when download-ahead had kept every download out of the count and
     // checking and applying weren't counted at all.
-    private struct Work { var downloaded: Int64 = 0, checked: Int64 = 0, applied: Int64 = 0 }
+    private struct Work {
+        var downloaded: Int64 = 0, checked: Int64 = 0, applied: Int64 = 0, measuredBefore: Int64 = 0, measuredAfter: Int64 = 0
+    }
     private var work: [Int: Work] = [:]
     /// The first patch not yet applied in this run; the ones before it count in full.
     private var workFloor: Int?
@@ -285,8 +288,10 @@ import UIKit
 
     private func reportWork(offsets: [Int64], after event: String) {
         guard let floor = workFloor, let total = offsets.last else { return }
-        let current = work.filter { $0.key >= floor }.values.reduce(Int64(0)) { $0 + $1.downloaded + $1.checked + $1.applied }
-        let done = 3 * offsets[floor - 1] + current
+        let current = work.filter { $0.key >= floor }.values.reduce(Int64(0)) {
+            $0 + $1.downloaded + $1.checked + $1.applied + $1.measuredBefore + $1.measuredAfter
+        }
+        let done = 4 * offsets[floor - 1] + current
         if done > workReported {
             let now = Date(), gap = now.timeIntervalSince(workChanged)
             longestGap = max(longestGap, gap)
@@ -294,11 +299,11 @@ import UIKit
             workChanged = now
             if UIApplication.shared.applicationState != .active, now.timeIntervalSince(backgroundLogged) >= 5 {
                 backgroundLogged = now
-                log(String(format: "background progress %.4f%% after %@", Double(done) / Double(max(1, 3 * total)) * 100, event))
+                log(String(format: "background progress %.4f%% after %@", Double(done) / Double(max(1, 4 * total)) * 100, event))
             }
         }
         workReported = max(workReported, done)
-        background.progress(doneBytes: UInt64(workReported), totalBytes: UInt64(max(1, 3 * total)))
+        background.progress(doneBytes: UInt64(workReported), totalBytes: UInt64(max(1, 4 * total)))
     }
 
     /// Logs Madeira leaving and returning to the foreground while a run is going, so a
@@ -328,6 +333,7 @@ import UIKit
         case .checkProgress(let index, let bytes): return "check of #\(index) at \(bytes)"
         case .applying(let index, _, _): return "apply of #\(index) starting"
         case .applyProgress(let index, let bytes): return "apply of #\(index) at \(bytes)"
+        case .measuring(let index, let bytes, _, let after): return "size check \(after ? "after" : "before") #\(index) at \(bytes)"
         case .applied(let index, _, _, _, _): return "#\(index) applied"
         case .measured: return "a size check"
         case .drive: return "the drive check"
@@ -357,19 +363,27 @@ import UIKit
             job?.detail = "Downloading \(index) of \(count): \(name)"
         case .checking(let index, let count, let name):
             workFloor = workFloor ?? index
-            work[index] = Work(downloaded: size(index))
+            work[index] = Work(downloaded: size(index), measuredBefore: work[index]?.measuredBefore ?? 0)
             job?.current = index
             job?.detail = "Checking \(index) of \(count): \(name)"
         case .checkProgress(let index, let bytes):
             work[index, default: Work(downloaded: size(index))].checked = min(bytes, size(index))
         case .applying(let index, let count, let name):
             workFloor = workFloor ?? index
-            work[index] = Work(downloaded: size(index), checked: size(index))
+            work[index] = Work(downloaded: size(index), checked: size(index), measuredBefore: work[index]?.measuredBefore ?? 0)
             job?.current = index
             job?.done = offsets[index]
             job?.detail = "Applying \(index) of \(count): \(name)"
         case .applyProgress(let index, let bytes):
             work[index, default: Work(downloaded: size(index), checked: size(index))].applied = min(bytes, size(index))
+        case .measuring(let index, let bytes, let expected, let after):
+            guard expected > 0 else { break }
+            let share = Int64(Double(size(index) / 2) * min(1, Double(bytes) / Double(expected)))
+            if after {
+                work[index, default: Work()].measuredAfter = max(work[index]?.measuredAfter ?? 0, share)
+            } else {
+                work[index, default: Work()].measuredBefore = max(work[index]?.measuredBefore ?? 0, share)
+            }
         case .applied(let index, _, let name, let version, let timing):
             workFloor = index + 1
             work = work.filter { $0.key > index }
@@ -387,7 +401,8 @@ import UIKit
             log("size check \(repository): \(bytes) bytes, the list says \(expected)" + (bytes == expected ? ", same" : ", DIFFERENT"))
         case .drive(let spins, let milliseconds, let file):
             log(String(format: "drive: median uncached random read %.2f ms in %@, so %@", milliseconds, file,
-                       spins ? "a spinning disk: writes up to 256 KiB apart are joined" : "flash: only touching writes are joined"))
+                       spins ? "a spinning disk: writes up to 256 KiB apart are joined and go straight to the drive"
+                             : "flash: only touching writes are joined"))
         case .note(let text):
             log(text)
         }
