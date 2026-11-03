@@ -16,7 +16,7 @@ enum SquareEnixGame {
     /// The installation an entry starts, or nil for any other entry. Steam, Epic,
     /// itch.io and EA app games and the Desktop start their own way and are never one.
     static func install(for entry: LibraryEntry) -> FFXIVInstall? {
-        guard entry.desktop != true, entry.steamAppID == nil, entry.epicAppName == nil, entry.itchGameID == nil, entry.eaOfferID == nil else { return nil }
+        guard entry.desktop != true, entry.steamAppID == nil, entry.epicAppName == nil, entry.gogProductID == nil, entry.itchGameID == nil, entry.eaOfferID == nil else { return nil }
         return FFXIVInstall(program: LibraryModel.drive.appendingPathComponent(entry.relativePath))
     }
 
