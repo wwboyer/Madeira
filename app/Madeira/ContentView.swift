@@ -3600,8 +3600,17 @@ struct ContentView: View {
             if DockGameSession.has32BitProgram(in: gameFolder, machine: DockInstallers.machine) {
                 setenv("MADEIRA_WOW_HOLD_WINDOWS", "1", 1)
                 logStore.log("[dock-wow] the game's folder holds a 32-bit program: one guest-window placeholder is held from session start (MADEIRA_WOW_HOLD_WINDOWS=1)")
+                // The held window goes only to the game's own 32-bit programs: Valve's 32-bit client service,
+                // demand-started seconds into the session once a CEG game installed it, took it and the game
+                // found no slot (2026-11-02). A program from elsewhere still gets any other free slot.
+                if MadeiraConfig.flag("MADEIRA_WOW_HOLD_FOR_GAME") {   // 0: any 32-bit program may take the held window, as before 2026-11-02
+                    setenv("MADEIRA_WOW_HOLD_FOR", game.windowsInstallPath + "\\", 1)
+                } else {
+                    unsetenv("MADEIRA_WOW_HOLD_FOR")
+                }
             } else {
                 unsetenv("MADEIRA_WOW_HOLD_WINDOWS")
+                unsetenv("MADEIRA_WOW_HOLD_FOR")
             }
             // A 64-bit title beside its 32-bit helpers: its memory takes donor RAM first even while
             // a 32-bit program is in the session (virtual_ios.c ios_swap_x64_policy, swap-x64 unset).
@@ -4288,6 +4297,10 @@ struct TouchControlsOverlay: View {
                 // The library between sessions (the window came up for a start that did not
                 // happen) draws nothing over the library's own screens.
                 if landscape && !(library.enabled && !session && !m.editing) {
+                    if m.editing {
+                        Color.clear.contentShape(editorCanvas(geo.size))
+                            .onTapGesture { m.selected = nil; zones.selected = nil }
+                    }
                     if (m.visible || m.editing) && !library.blocksGameplayTouch {
                         if GestureZonesModel.enabled {
                             GestureZonesLayer(screen: geo.size, editing: m.editing)
@@ -4318,6 +4331,22 @@ struct TouchControlsOverlay: View {
         .ignoresSafeArea()
         .statusBarHidden(library.current != nil)
         .persistentSystemOverlays(library.current != nil ? .hidden : .automatic)
+    }
+
+    /// The dismissal gesture must never take a control's drag on iOS 26.
+    private func editorCanvas(_ screen: CGSize) -> Path {
+        var area = Path(CGRect(origin: .zero, size: screen))
+        for control in m.controls {
+            let size = TouchControlsModel.size(control)
+            let frame = CGRect(x: CGFloat(control.nx) * screen.width - size.width / 2,
+                               y: CGFloat(control.ny) * screen.height - size.height / 2,
+                               width: size.width, height: size.height)
+            area = area.subtracting(Path(frame))
+        }
+        if GestureZonesModel.enabled {
+            for zone in zones.zones { area = area.subtracting(Path(zone.rect(in: screen))) }
+        }
+        return area
     }
 
     /// Every control in ONE GlassEffectContainer: on iOS 26 the system merges
@@ -4779,6 +4808,7 @@ struct MappingPanel: View {
     let screen: CGSize
     @ObservedObject private var m = TouchControlsModel.shared
     @State private var tab = 0                    // 0 keyboard, 1 controller
+    @State private var resizeDiameter: CGFloat?
 
 
     var body: some View {
@@ -4797,6 +4827,31 @@ struct MappingPanel: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel(control.locked == true ? "Unlock control" : "Lock control")
             }
+            HStack(spacing: 8) {
+                Text("Size").font(.system(size: 12))
+                Slider(value: Binding(get: { control.scale }, set: { value in
+                    if let i = m.index(of: control.id), m.controls[i].locked != true {
+                        m.controls[i].scale = value
+                    }
+                }), in: 0.5...3.0, onEditingChanged: { resizing in
+                    if resizing {
+                        if resizeDiameter == nil { resizeDiameter = TouchControlsModel.diameter(control) }
+                    } else if resizeDiameter != nil {
+                        // Let the slider finish tracking before the panel moves.
+                        DispatchQueue.main.async { resizeDiameter = nil }
+                    }
+                })
+                    .id(control.id)
+                    .disabled(control.locked == true)
+                    .accessibilityLabel("Control size")
+                    .accessibilityValue("\(Int(control.scale * 100)) percent")
+                Text("\(Int(control.scale * 100))%")
+                    .font(.system(size: 12).monospacedDigit())
+                    .frame(width: 42, alignment: .trailing)
+            }
+            .padding(.horizontal, 12)
+            .frame(minHeight: 44)
+            .foregroundStyle(.white)
             Rectangle().fill(.white.opacity(0.15)).frame(height: 1)
             LayerButtons { mv in if let i = m.index(of: control.id) { mv.apply(&m.controls, i) } }
                 .padding(.horizontal, 10)
@@ -4810,6 +4865,8 @@ struct MappingPanel: View {
         .background(GlassShape())
         .clipShape(RoundedRectangle(cornerRadius: 18))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(.white.opacity(0.18), lineWidth: 1))
+        .contentShape(Rectangle())
+        .onTapGesture { } // Panel gaps must not dismiss the selection beneath them.
         .position(layout.center)
     }
 
@@ -4829,7 +4886,7 @@ struct MappingPanel: View {
     private var layout: Placement {
         let cx = CGFloat(control.nx) * screen.width
         let cy = CGFloat(control.ny) * screen.height
-        let r  = TouchControlsModel.diameter(control) / 2
+        let r  = (resizeDiameter ?? TouchControlsModel.diameter(control)) / 2
         let gap: CGFloat = 14, edge: CGFloat = 8
 
         for size in [CGSize(width: 340, height: 236),
