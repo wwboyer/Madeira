@@ -736,7 +736,7 @@ final class SquareEnixSignIn {
             let update = SquareEnixUpdate(stage: .game, patches: patches)
             let repositories = Dictionary(grouping: patches, by: \.repository).map { "\($0.key)=\($0.value.count)" }.sorted()
             log("[sqex-signin] session: HTTP \(sessionReply.statusCode), \(patches.count) game patches pending " +
-                "(\(repositories.joined(separator: " ")), \(update.downloadBytes) bytes, to \(update.target ?? "?")")
+                "(\(repositories.joined(separator: " "))), \(update.downloadBytes) bytes, to \(update.target ?? "?")")
             throw SquareEnixSignInError.updateNeeded(update)
         }
         guard let sessionID = SquareEnixProtocol.sessionID(from: sessionReply) else {
