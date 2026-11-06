@@ -190,13 +190,42 @@ check(SquareEnixProtocol.isOpen(Data("{\"status\":1,\"message\":[\"The game is u
       "the gate's maintenance message alone does not close it")
 check(!SquareEnixProtocol.isOpen(Data("{\"status\":0}".utf8)) && !SquareEnixProtocol.isOpen(Data("oops".utf8)), "anything else is closed")
 
-let patchList = Data(("--B\r\nContent-Type: application/octet-stream\r\nX-Patch-Length: 10\r\n\r\n" +
-                      "10\t20\t16\t15\t2026.08.18.0000.0001\thttp://patch-dl.ffxiv.com/boot/x/D2026.08.18.0000.0001.patch\r\n--B--\r\n").utf8)
+// Patch lists as the servers send them: boot lines have six tab-separated fields, game lines
+// nine (with a SHA-1 per hash block); the repository comes from the URL.
+let bootURL = URL(string: "http://patch-dl.ffxiv.com/boot/2b5cbc63/D2026.08.18.0000.0001.patch")!
+func bootListText(_ url: String) -> String {
+    "--B\r\nContent-Type: application/octet-stream\r\nX-Patch-Length: 10\r\n\r\n" +
+        "10\t20\t16\t15\t2026.08.18.0000.0001\t\(url)\r\n--B--\r\n"
+}
+let patchList = Data(bootListText(bootURL.absoluteString).utf8)
+let bootPatches = [SquareEnixPatch(repository: "boot", size: 10, installedSize: 20, fileCount: 16, target: "2026.08.18.0000.0001",
+                                   hashBlockSize: 0, sha1: [], url: bootURL)]
+let hashA = String(repeating: "a", count: 40), hashB = String(repeating: "b", count: 40)
+let gameURL = URL(string: "http://patch-dl.ffxiv.com/game/4e9a232b/D2026.10.16.0000.0000.patch")!
+let ex1URL = URL(string: "http://patch-dl.ffxiv.com/game/ex1/6b936f08/D2026.08.20.0000.0000.patch")!
+let gameListText = "--B\r\nContent-Type: application/octet-stream\r\n\r\n" +
+    "60000000\t69117345196\t250\t11\t2026.10.16.0000.0000\tsha1\t50000000\t\(hashA),\(hashB)\t\(gameURL.absoluteString)\r\n" +
+    "47696\t9200000000\t30\t11\t2026.08.20.0000.0000\tsha1\t50000000\t\(hashA)\t\(ex1URL.absoluteString)\r\n--B--\r\n"
+let gameList = Data(gameListText.utf8)
+let gamePatches = [
+    SquareEnixPatch(repository: "ffxiv", size: 60000000, installedSize: 69117345196, fileCount: 250, target: "2026.10.16.0000.0000",
+                    hashBlockSize: 50000000, sha1: [hashA, hashB], url: gameURL),
+    SquareEnixPatch(repository: "ex1", size: 47696, installedSize: 9200000000, fileCount: 30, target: "2026.08.20.0000.0000",
+                    hashBlockSize: 50000000, sha1: [hashA], url: ex1URL),
+]
 check(SquareEnixProtocol.bootCheck(status: 204, body: Data()) == .current, "204: current")
-check(SquareEnixProtocol.bootCheck(status: 200, body: patchList) == .update("2026.08.18.0000.0001"), "200 patch list: the target version")
+check(SquareEnixProtocol.bootCheck(status: 200, body: patchList) == .update(bootPatches), "200 patch list: the parsed boot patches")
+check(SquareEnixProtocol.bootCheck(status: 200, body: Data(bootListText("http://patch-dl.ffxiv.com/boot/x/D2026.08.18.0000.0001.patch").utf8))
+      == .update([]), "a boot list that doesn't parse (no repository ID): an update with no patches")
 check(SquareEnixProtocol.bootCheck(status: 200, body: Data()) == .current, "empty 200: current (the wiki's reading)")
 check(SquareEnixProtocol.bootCheck(status: 404, body: Data()) == .unknownVersion, "404: unknown version")
 check(SquareEnixProtocol.bootCheck(status: 500, body: Data()) == .unexpected(500), "anything else: unexpected")
+check(SquareEnixProtocol.patchList(gameList) == gamePatches, "game patch list: nine fields, the repository from the URL, a SHA-1 per block")
+check(SquareEnixProtocol.patchList(Data(gameListText.replacingOccurrences(of: "\(hashA),\(hashB)", with: hashA).utf8)) == nil,
+      "hashes that don't cover a patch's size: the whole list is refused")
+check(SquareEnixProtocol.patchList(Data(gameListText.replacingOccurrences(of: "http://patch-dl.ffxiv.com/game/ex1",
+                                                                          with: "https://example.com/game/ex1").utf8)) == nil,
+      "a patch that isn't on http://patch-dl.ffxiv.com: the whole list is refused")
 
 // The whole sign-in, against a scripted transport.
 final class Scripted: SquareEnixTransport {
@@ -285,17 +314,31 @@ check(failure { $0.replies["frontier.ffxiv.com/worldStatus/login_status.json"] =
       "closed login status stops before the password is sent")
 check(failure { $0.replies["frontier.ffxiv.com/worldStatus/gate_status.json"] = (200, [:], Data("{\"status\":0}".utf8)) } == .closed,
       "closed gate stops before the session")
-check(failure { $0.replies["patch-bootver.ffxiv.com/"] = (200, [:], patchList) } == .gameUpdateNeeded("2026.08.18.0000.0001"),
-      "outdated boot files: update needed, with the target")
+check(failure { $0.replies["patch-bootver.ffxiv.com/"] = (200, [:], patchList) }
+      == .updateNeeded(SquareEnixUpdate(stage: .boot, patches: bootPatches)), "outdated boot files: update needed, with the boot patches")
+check(failure { $0.replies["patch-bootver.ffxiv.com/"] = (404, [:], Data()) }
+      == .updateNeeded(SquareEnixUpdate(stage: .boot, patches: [])), "an unknown boot version: update needed, with no patches")
 check(failure { $0.replies["ffxiv-login.square-enix.com/oauth/ffxivarr/login/login.send"] = (200, [:], Data(refused.utf8)) }
       == .refused("The Square Enix ID or password is incorrect.\r\nTry again."), "a refusal carries Square Enix's message")
 let notPlayable = goodReply.replacingOccurrences(of: "playable,1", with: "playable,0")
 check(failure { $0.replies["ffxiv-login.square-enix.com/oauth/ffxivarr/login/login.send"] = (200, [:], Data(notPlayable.utf8)) }
       == .notPlayable, "playable 0 stops")
-check(failure { $0.replies["patch-gamever.ffxiv.com/"] = (409, [:], patchList) } == .sessionRejected, "no X-Patch-Unique-Id: rejected")
-check(lines.contains { $0.contains("no X-Patch-Unique-Id") && $0.contains("patches to 2026.08.18.0000.0001") }, "a rejected session logs the patch targets")
+// An outdated game gets a patch list and a session ID (2026-10-31): the list stops sign-in first.
+let gameUpdate = SquareEnixUpdate(stage: .game, patches: gamePatches)
+check(failure { $0.replies["patch-gamever.ffxiv.com/"] = (200, ["X-Patch-Unique-Id": sessionID], gameList) } == .updateNeeded(gameUpdate),
+      "an outdated game: update needed with the game patches, even with a session ID")
+check(lines.contains { $0.contains("2 game patches pending (ex1=1 ffxiv=1)") && $0.contains("to 2026.10.16.0000.0000") },
+      "a pending game update is logged with its repositories and target")
+check(failure {
+    $0.replies["patch-gamever.ffxiv.com/"] = (200, ["X-Patch-Unique-Id": sessionID],
+                                             Data(gameListText.replacingOccurrences(of: "/game/4e9a232b/", with: "/game/x/").utf8))
+} == .unexpectedReply(.session), "a game patch list that doesn't parse: not understood")
+check(failure { $0.replies["patch-gamever.ffxiv.com/"] = (409, [:], Data()) } == .sessionRejected, "no X-Patch-Unique-Id: rejected")
+check(lines.contains { $0.contains("no X-Patch-Unique-Id") }, "a rejected session is logged")
 check(failure { $0.fail = "patch-gamever.ffxiv.com/" } == .unreachable(.session), "a network error maps to its step")
-for error in [SquareEnixSignInError.unreachable(.session), .unexpectedReply(.credentials), .closed, .gameUpdateNeeded(nil),
+check(SquareEnixSignInError.updateNeeded(gameUpdate).localizedDescription
+      == "The game needs an update (to 2026.10.16.0000.0000) before you can play.", "the update message names the target")
+for error in [SquareEnixSignInError.unreachable(.session), .unexpectedReply(.credentials), .closed, .updateNeeded(gameUpdate),
               .notPlayable, .sessionRejected, .installUnreadable("x"), .cancelled] {
     check(leaks(error.localizedDescription) == nil, "message for \(error) holds no secret")
 }
