@@ -741,13 +741,32 @@ static uint16_t madeira_pe_machine(const char *unix_path)
  *    links the 64-bit farms; the first farm copy's PE header is probed. Otherwise it is looked up in the bundle's i386-windows. To
  *    launch the 32-bit build of a name both sets carry (explorer.exe, cmd.exe),
  *    give its full path, C:\windows\syswow64\<name>.
+ *  - "C:\windows\system32\<name>" (any case, no subfolder): a name one of the
+ *    64-bit farms carries is probed there, in the bare-name order. The prefix's
+ *    system32 entry is a link the farm step below rewrites only after this
+ *    probe, so it still points at the last session's farm, or nowhere after a
+ *    reinstall moved the bundle: a .bat start (cmd.exe /c) probed 0, the path
+ *    rule picked arm64ec, and the aarch64 cmd.exe failed to load kernel32.dll
+ *    (c000007b). Any other name is the prefix's own file, as below.
  *  - any other form (another drive, a relative Win32 path) is not probed. */
 static uint16_t madeira_target_machine(const char *exe, const char *prefix, NSString *bundle)
 {
     static const char * const farms64[] = { "aarch64-windows", "arm64ec-windows" };
+    static const char sys32[] = "C:\\windows\\system32\\";
     char probe[PATH_MAX];
     size_t skip;
 
+    if (!strncasecmp(exe, sys32, sizeof(sys32) - 1) && exe[sizeof(sys32) - 1] &&
+        !strchr(exe + sizeof(sys32) - 1, '\\'))
+    {
+        for (size_t i = 0; i < sizeof(farms64) / sizeof(farms64[0]); i++)
+        {
+            if (snprintf(probe, sizeof(probe), "%s/%s/%s", bundle.fileSystemRepresentation, farms64[i],
+                         exe + sizeof(sys32) - 1) >= (int)sizeof(probe))
+                return 0;
+            if (access(probe, R_OK) == 0) return madeira_pe_machine(probe);
+        }
+    }
     if ((exe[0] == 'C' || exe[0] == 'c') && exe[1] == ':' && exe[2] == '\\')
     {
         skip = strlen(prefix) + strlen("/drive_c/");

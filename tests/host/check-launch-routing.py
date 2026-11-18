@@ -85,6 +85,20 @@ int main(int argc, char **argv)
     assert(madeira_target_machine("both.exe", prefix, bundle) == 0xaa64);
     assert(madeira_target_machine("only32.exe", prefix, bundle) == 0x14c);
     assert(madeira_target_machine("nowhere.exe", prefix, bundle) == 0);
+    /* C:\windows\system32\<name>: the bundle's 64-bit farms decide, not the prefix's link,
+     * which dangles after a reinstall (a .bat start probed 0 and ran aarch64 cmd.exe on
+     * the arm64ec farm: c000007b loading kernel32.dll) */
+    assert(madeira_target_machine("C:\\windows\\system32\\cmd.exe", prefix, bundle) == 0xaa64);
+    assert(madeira_target_machine("c:\\Windows\\System32\\CMD.EXE", prefix, bundle) == 0xaa64);
+    assert(madeira_target_machine("C:\\windows\\system32\\fresh.exe", prefix, bundle) == 0xaa64);   /* no link yet */
+    assert(madeira_target_machine("C:\\windows\\system32\\ec.exe", prefix, bundle) == 0x8664);     /* arm64ec only */
+    assert(madeira_target_machine("C:\\windows\\system32\\twofarm.exe", prefix, bundle) == 0xaa64); /* as a bare name */
+    /* not a farm name: the prefix's own file, as before; never the i386 farm */
+    assert(madeira_target_machine("C:\\windows\\system32\\dropped.exe", prefix, bundle) == 0x8664);
+    assert(madeira_target_machine("C:\\windows\\system32\\only32.exe", prefix, bundle) == 0);
+    /* a subfolder of system32 is an ordinary path */
+    assert(madeira_target_machine("C:\\windows\\system32\\wbem\\cmd.exe", prefix, bundle) == 0x8664);
+    assert(madeira_target_machine("C:\\windows\\system32x\\cmd.exe", prefix, bundle) == 0);
     puts("probe ok");
     return 0;
 }
@@ -109,6 +123,15 @@ with tempfile.TemporaryDirectory() as tmp:
     (t / "bundle/aarch64-windows/both.exe").write_bytes(pe(0xaa64))
     (t / "bundle/i386-windows/both.exe").write_bytes(pe(0x14c))
     (t / "bundle/i386-windows/only32.exe").write_bytes(pe(0x14c))
+    for name in ["cmd.exe", "fresh.exe", "twofarm.exe"]:
+        (t / "bundle/aarch64-windows" / name).write_bytes(pe(0xaa64))
+    for name in ["ec.exe", "twofarm.exe"]:
+        (t / "bundle/arm64ec-windows" / name).write_bytes(pe(0x8664))
+    sys32 = t / "prefix/drive_c/windows/system32"; (sys32 / "wbem").mkdir(parents=True)
+    (sys32 / "cmd.exe").symlink_to(t / "old-bundle/aarch64-windows/cmd.exe")   # dangling, as after a reinstall
+    (sys32 / "ec.exe").symlink_to(t / "bundle/aarch64-windows/cmd.exe")        # a stale farm's copy
+    (sys32 / "dropped.exe").write_bytes(pe(0x8664))
+    (sys32 / "wbem/cmd.exe").write_bytes(pe(0x8664))
     c = t / "check.c"; exe = t / "check"; c.write_text(code)
     subprocess.run(["cc", "-std=gnu11", "-O1", "-g", "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
                     "-Werror=implicit-function-declaration", str(c), "-o", str(exe)], check=True)
