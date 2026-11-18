@@ -234,7 +234,7 @@ struct LibraryGridPageModel: Equatable {
             let steamFirst = MadeiraDock.enabled && LibraryGridSteamItems.hasInstalled
             if steamFirst && tab.shows(.steam) { page.steamSection(inputs, part: .installed) }
             // As on the original page: FINAL FANTASY XIV between installed Steam games and Other games.
-            if let signature = inputs.ffxivSignature { page.ffxivSection(inputs, signature: signature) }
+            if let signature = inputs.ffxivSignature, tab.shows(.ffxiv) { page.ffxivSection(inputs, signature: signature) }
             if LibraryGridSteamItems.shown {
                 if tab.shows(.other) { page.othersSection(inputs) }
                 if MadeiraDock.enabled && tab.shows(.steam) { page.steamSection(inputs, part: steamFirst ? .notInstalled : .all) }

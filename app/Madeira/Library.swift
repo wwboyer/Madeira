@@ -2995,11 +2995,11 @@ struct LibrarySectionHeader<Trailing: View>: View {
 }
 
 /// The library's store tabs: with Group by Platform, a segmented control at the top of the
-/// page shows one store's section at a time (Steam, the games you added, GOG, itch.io, Epic
-/// Games, EA app) or All of them. Only the sections the page would show get a tab, and with
+/// page shows one store's section at a time (Steam, FINAL FANTASY XIV, the games you added,
+/// GOG, itch.io, Epic Games, EA app) or All of them. Only the sections the page would show get a tab, and with
 /// fewer than two there are none. env.MADEIRA_LIBRARY_TABS = 0: no tabs, every section on one page.
 enum LibraryStoreTab: String, CaseIterable, Identifiable {
-    case all, steam, other, gog, itch, epic, ea
+    case all, steam, ffxiv, other, gog, itch, epic, ea
     var id: String { rawValue }
     static let key = "madeiraLibraryStoreTab"
     static var enabled: Bool { MadeiraConfig.flag("MADEIRA_LIBRARY_TABS") }
@@ -3009,6 +3009,7 @@ enum LibraryStoreTab: String, CaseIterable, Identifiable {
         switch self {
         case .all: return L("All")
         case .steam: return "Steam"
+        case .ffxiv: return "FFXIV"
         case .other: return L("Other")
         case .gog: return "GOG"
         case .itch: return "itch.io"
@@ -3023,6 +3024,7 @@ enum LibraryStoreTab: String, CaseIterable, Identifiable {
         guard enabled else { return [] }
         var tabs: [LibraryStoreTab] = []
         if steam { tabs.append(.steam) }
+        if FFXIVLibrary.enabled { tabs.append(.ffxiv) }   // FFXIVLibrary.swift
         tabs.append(.other)
         if GOGLibrary.enabled { tabs.append(.gog) }
         if ItchLibrary.enabled { tabs.append(.itch) }
@@ -3415,7 +3417,9 @@ struct LibraryView: View {
     /// and sorting go game by game, so their order among the Steam games is the
     /// order without them.
     private var focusOrder: [LibraryEntry] {
-        guard group != "platform" else { return ffxivEntries + (currentTab.shows(.other) ? entries : []) }
+        guard group != "platform" else {
+            return (currentTab.shows(.ffxiv) ? ffxivEntries : []) + (currentTab.shows(.other) ? entries : [])
+        }
         // A library file edited by hand (or written by a fork) may repeat an id: keep the first.
         let positions = Dictionary(model.entries.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
         let byID = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -3698,7 +3702,7 @@ struct LibraryView: View {
                                       part: .installed, open: { selected = $0 })
                 }
                 // FINAL FANTASY XIV (FFXIVLibrary.swift): its entries, or an install card.
-                if FFXIVLibrary.enabled {
+                if FFXIVLibrary.enabled && tab.shows(.ffxiv) {
                     FFXIVSection(entries: ffxivEntries, open: { selected = $0 }) { games in
                         cells(games, width: viewport.size.width)
                     }

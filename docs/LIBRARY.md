@@ -63,8 +63,9 @@ Removing an entry never removes the game's files or saves.
   Steam install records and the account's library again. Without Madeira
   Dock the games you added are one grid.
 - Store tabs: with Group by Platform and two or more sections, a segmented control at
-  the top of the page shows **All** of them or one at a time (**Steam**, **Other** for the
-  games you added, **GOG**, **itch.io**, **Epic**, **EA**). Only the sections the page shows
+  the top of the page shows **All** of them or one at a time (**Steam**, **FFXIV** for the
+  FINAL FANTASY XIV section, **Other** for the games you added, **GOG**, **itch.io**,
+  **Epic**, **EA**). Only the sections the page shows
   get a tab; the choice is remembered, and a tab whose store is turned off shows All. When
   the segments do not fit across, they become capsules that scroll sideways.
 - Grid cards: a game that is not installed shows its artwork darkened, with a
